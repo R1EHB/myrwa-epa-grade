@@ -1,0 +1,7 @@
+pdf/
+rdata/
+.Rhistory
+
+*.html
+
+csv/

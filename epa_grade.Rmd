@@ -1,0 +1,1182 @@
+---
+title: 'MyRWA: EPA Grade'
+author: "Jeffrey D Walker, PhD"
+date: "June 23, 2015"
+output: 
+  html_document: 
+    number_sections: yes
+    toc: yes
+    css: styles.css
+---
+
+```{r libraries, echo=FALSE, warning=FALSE, message=FALSE}
+library(dplyr)
+library(tidyr)
+library(myrwaR)
+library(lubridate)
+library(knitr)
+library(ggplot2)
+theme_set(theme_bw())
+library(gridExtra)
+
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+
+scale_fill_weather <- scale_fill_manual(values=c('Dry'='orangered',
+                                                 'Wet'='deepskyblue'))
+```
+
+# Overview
+
+This document summarizes an analysis of indicator bacteria data collected in the Mystic River basin. The goals of this analysis are to:
+
+1) better understand the spatial and temporal variability in compliance with state water quality standards
+2) evaluate a quantitative methodology for assigning letter grades based on the previous EPA grading system
+3) explore alternative methods for computing the compliance and for evaluating individual water bodies
+
+This table lists the relevant water quality standards for boating and swimming. The Enterococcus (ENT) data and standard will be used for saltwater locations, while E. coli (ECOLI) will be used for freshwater locations.
+
+```{r bact-std, results="asis"}
+bact_std <- data.frame(WaterType=c("Saline", "Fresh"),
+                       CharacteristicID=c("ENT", "ECOLI"),
+                       BoatStd=c(350, 1260),
+                       SwimStd=c(104, 235))
+bact_std %>%
+  rename("Location Type"=WaterType,
+         "Varaible"=CharacteristicID,
+         "Boating Standard"=BoatStd,
+         "Swimming Standard"=SwimStd) %>%
+  kable()
+```
+
+# Precipitation Data
+
+Hourly precipitation was obtained for the Logan Airport weather station. Wet/dry weather categories are assigned based on a threshold of 48-hour antecedent precipitation > 0.25\".
+
+```{r load-precip}
+# prcp <- read_csv(file = "~/Dropbox/Work/mystic/_share_db/Processed/Precip/logan-hourly/20150605/logan_hourly.csv",
+#                  col_types=list(col_character(), col_double())) %>%
+prcp <- read.csv(file = "~/Dropbox/Work/mystic/_share_db/Processed/Precip/logan-hourly/20150605/logan_hourly.csv", stringsAsFactors=FALSE) %>%
+  mutate(datetime=ymd_hms(datetime, tz="EST")) %>%
+  rename(Datetime=datetime, Precip=prcp_in) %>%
+  as.data.frame
+prcp$Precip <- ifelse(is.na(prcp$Precip), 0, prcp$Precip)
+prcp$Precip48 <- antecedent_precip(prcp)
+prcp$Weather <- factor(ifelse(prcp$Precip48 > 0.25, 'Wet', 'Dry'))
+```
+
+This figure shows the fraction of hours for each weather category by year.
+
+```{r plot-prcp-frac, fig.width=8, fig.height=4}
+mutate(prcp, Year=year(Datetime)) %>%
+  filter(Year > 1981, Year < 2015) %>%
+  group_by(Year, Weather) %>%
+  summarise(N=n()) %>%
+  ggplot(aes(factor(Year), N, fill=Weather)) +
+  geom_bar(position='fill', stat='identity') +
+  scale_fill_manual(values=c('Dry'='orangered', 'Wet'='deepskyblue')) +
+  labs(x="Year", y="Fraction",
+       title='Fraction Time Dry/Wet by Year') +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5))
+```
+
+Overall, the annual mean fraction of Wet weather hours from 1982-2014 is about 25%:
+
+```{r mean-wet-fraction}
+mutate(prcp, Year=year(Datetime)) %>%
+  filter(Year > 1981, Year < 2015) %>%
+  group_by(Year, Weather) %>%
+  summarise(N=n()) %>%
+  spread(Weather, N) %>%
+  mutate(Fraction_Wet=Wet/(Dry+Wet)) %>%
+  summarise(Mean_Fraction_Wet=mean(Fraction_Wet))
+```
+
+This figure shows the weather fractions for only the summer (May-Oct) of each year. Although there is more year-to-year variability than the plot above, the overall mean fraction is about the same indicating no major seasonal differences in the occurance of wet and dry weather. However, note that "Wet" conditions during winter months may contribute to snowpack, and thus not immediately generate runoff that could affect the instream bacteria concentrations. An improved classification might consider snowmelt during winter months for characterizing wet events.
+
+```{r plot-prcp-frac-summer, fig.width=8, fig.height=4}
+mutate(prcp, Year=year(Datetime)) %>%
+  filter(Year > 1981, Year < 2015) %>%
+  filter(month(Datetime) %in% seq(5, 10)) %>%
+  group_by(Year, Weather) %>%
+  summarise(N=n()) %>%
+  ggplot(aes(factor(Year), N, fill=Weather)) +
+  geom_bar(position='fill', stat='identity') +
+  scale_fill_weather +
+  labs(x="Year", y="Fraction",
+       title='Fraction Time Dry/Wet During Summer (May-Oct) by Year') +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5))
+```
+
+
+# Bacteria Data
+
+```{r load data}
+load('bact.Rdata')
+
+# surface samples only
+df <- mutate(df, 
+              SampleDepthType=as.character(SampleDepthType),
+              SampleDepthType=ifelse(is.na(SampleDepthType), "S", SampleDepthType)) %>%
+  filter(SampleDepthType=="S")
+
+# locations
+loc <- rename(loc, LocationID=ID) %>%
+  mutate(Location_Waterbody=paste(WaterBodyID, LocationID, sep="-")) %>%
+  arrange(WaterBodyID, LocationID) %>%
+  mutate(LocationID=ordered(LocationID, levels=LocationID),
+         WaterBodyID=ordered(WaterBodyID, levels=unique(WaterBodyID)),
+         WaterType=ordered(WaterType, levels=c("Fresh", "Saline")),
+         Location_Waterbody=ordered(Location_Waterbody, levels=Location_Waterbody),
+         Agency=ifelse(stringr::str_sub(LocationID, 1, 4)=="MWRA", "MWRA", "MyRWA"),
+         Agency=factor(Agency))
+
+# add precip and weather to df
+df <- mutate(df, Datehour=round_date(Datetime, unit="hour")) %>%
+  left_join(prcp, by=c("Datehour"="Datetime"))
+
+# add location info
+df <- left_join(df, select(loc, LocationID, WaterBodyID, WaterType, Location_Waterbody, Agency),
+                by="LocationID") %>%
+  mutate(LocationID=ordered(LocationID, levels=levels(loc$LocationID)))
+
+# filter characteristic by salt/fresh location
+df <- mutate(df, 
+             WaterType=as.character(WaterType),
+             WaterType=ifelse(is.na(WaterType), 'Saline', WaterType),
+             WaterType=ordered(WaterType, levels=c('Fresh', 'Saline')))
+df <- filter(df, paste(WaterType, CharacteristicID) %in% c('Saline ENT', 'Fresh ECOLI'))
+
+# add standards
+df <- left_join(df, bact_std, by=c("CharacteristicID", "WaterType")) %>%
+  mutate(Meets=ifelse(ResultValue <= SwimStd, "Swim",
+                      ifelse(ResultValue <= BoatStd, "Boat", "None")),
+         Meets=ordered(Meets, levels=c("Swim", "Boat", "None")))
+
+# add year and month
+df <- mutate(df, Year=year(Datetime), Month=month(Datetime))
+
+# fix duplicate date
+df <- df[-which(df$LocationID=="MWRA052" & as.Date(df$Datetime)==as.Date("1991-02-07") & df$ID==279878),]
+
+# keep only 2002-2014 data
+# df <- filter(df, Year>=2002, Year<=2014)
+
+# save locations to csv for gis plotting
+# write_csv(loc, path="locations.csv")
+```
+
+```{r data-checks}
+df %>%
+  mutate(Date=floor_date(Datetime, unit="day")) %>%
+  group_by(Location_Waterbody, Agency, ProjectID, CharacteristicID, Date) %>%
+  summarise(N=n()) %>%
+  (function(x) {
+    stopifnot(all(x$N==1))
+  })
+
+stopifnot(all(!is.na(df$ResultValue)))
+```
+
+The bacteria dataset is comprised of three sampling programs from two organizations (MyRWA and MWRA):
+
+```{r table-project, results="asis"}
+select(df, Agency, ProjectID) %>%
+  unique %>%
+  kable(format = 'markdown', row.names=FALSE)
+```
+
+Two types of bacteria indicators were measured:
+
+- E. coli (`ECOLI`)
+- Enterococcus (`ENT`)
+
+The E. coli measurements are used to assess compliance in freshwater locations (above Amelia Earhart Dam), and the Enterococcus measurements are used for saltwater locations (below the dam).
+
+## Sampling Counts
+
+This figure shows the number of samples for each location (grouped by program) and year for 2002-2014 (note that some MWRA stations go back to 1989, but the MyRWA baseline program began in 2002). The freshwater MyRWA stations all span the period 2002-2014. Additional baseline stations were added in 2008-2009 in the saltwater portion of the watershed. The MWRA locations include more samples per year (approximately 1 sample every 1-2 weeks) than MyRWA locations that are sampled monthly.
+
+```{r plot-tile-cnt-yr, fig.width=10, fig.height=8}
+df %>%
+  filter(Year %in% seq(2002, 2014)) %>%
+  mutate(Location_Waterbody=ordered(as.character(Location_Waterbody), 
+                                    levels=rev(levels(Location_Waterbody)))) %>%
+  group_by(ProjectID, Location_Waterbody, WaterType, Year) %>%
+  summarise(N=n()) %>%
+  ggplot(aes(factor(Year), Location_Waterbody, fill=N)) +
+  geom_tile() +
+  scale_fill_gradientn('No. Samples', colours=rev(scales::brewer_pal(type = "seq", palette = 'GnBu')(9))) +
+  labs(x="Year", y="") +
+  facet_grid(WaterType~ProjectID, space="free_y", scales="free_y") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5, size=6))
+```
+
+This figure shows the number of samples at each location by month. The MyRWA Baseline program (`BASE`) contains samples evenly distributed across the year. The MWRA `CSORWM` program focuses on May-Oct, and `BHWQM` is more evenly distributed but with fewer samples in Jan-Mar.
+
+```{r plot-tile-cnt-month, fig.width=10, fig.height=8}
+df %>%
+  filter(Year %in% seq(2002, 2014)) %>%
+  mutate(Location_Waterbody=ordered(as.character(Location_Waterbody), 
+                                    levels=rev(levels(Location_Waterbody)))) %>%
+  group_by(ProjectID, Location_Waterbody, WaterType, Month) %>%
+  summarise(N=n()) %>%
+  ggplot(aes(factor(Month), Location_Waterbody, fill=N)) +
+  geom_tile() +
+  # scale_x_continuous(breaks=seq(1, 12, by=2)) +
+  scale_fill_gradientn('No. Samples', colours=rev(scales::brewer_pal(type = "seq", palette = 'GnBu')(9))) +
+  labs(x="Month", y="") +
+  facet_grid(WaterType~ProjectID, space="free_y", scales="free_y") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5))
+```
+
+## Distributions
+
+This figure shows the distribution of bacteria concentrations at each site under Dry and Wet weather for 2010-2014. At nearly all sites, there is a significant difference between Dry and Wet weather.
+
+```{r plot-bact-box, fig.width=10, fig.height=6}
+df %>%
+  filter(Year %in% seq(2010, 2014)) %>%
+  ggplot(aes(Location_Waterbody, ResultValue, fill=Weather)) +
+  geom_boxplot() +
+  geom_hline(aes(yintercept=Value, linetype=Standard),
+             data=gather(bact_std, Standard, Value, BoatStd, SwimStd),
+             show_guide = TRUE) +
+  scale_y_log10() +
+  scale_fill_weather +
+  labs(x='', y="Ecoli/Ent Concentration (#/100mL)") +
+  facet_grid(.~WaterType+CharacteristicID, scales='free_x', space="free_x") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5))
+```
+
+This figure shows the distributions of concentrations by waterbody for 2010-2014. The data are grouped by simpling combining all samples from individual locations. Therefore, locations with more samples have greater weight in the distribution.
+
+```{r plot-bact-box-wbody, fig.width=8, fig.height=5}
+df %>%
+  filter(Year %in% seq(2010, 2014)) %>%
+  ggplot(aes(WaterBodyID, ResultValue, fill=Weather)) +
+  geom_boxplot() +
+  geom_hline(aes(yintercept=Value, linetype=Standard),
+             data=gather(bact_std, Standard, Value, BoatStd, SwimStd),
+             show_guide = TRUE) +
+  scale_y_log10() +
+  scale_fill_weather +
+  labs(x='', y="Ecoli/Ent Concentration (#/100mL)") +
+  facet_grid(.~WaterType+CharacteristicID, scales='free_x', space="free_x") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5))
+```
+
+# Compliance Methodology
+
+The compliance of each location and waterbody is computed as a weighted mean of the compliances under dry and wet weather. This weighting scheme removes the year-to-year variability due to weather as well as the proportion of samples collected under each weather condition in a given year. As shown above, the long-term average fraction of the year under wet and dry conditions are 25% and 75%, respectively. Therefore, these fractions will be used to aggregate the compliances under dry/wet weather into an average compliance for a given year.
+
+## Compliance By Location
+
+This figure shows the compliance rates for each location undery dry and wet weather in 2014.
+
+```{r plot-bact-comp-weather, fig.width=10, fig.height=6}
+df_2014_std_weather <- filter(df, Year %in% 2014) %>%
+  arrange(LocationID, Weather, Meets) %>%
+  group_by(Agency, WaterType, Location_Waterbody, LocationID, WaterBodyID, 
+           CharacteristicID, Weather, Meets) %>%
+  summarise(N_Meets=n()) %>%
+  spread(Meets, N_Meets, fill=0) %>%
+  gather(Meets, N_Meets, Swim, Boat, None) %>%
+  group_by(LocationID) %>%
+  mutate(N_Location=sum(N_Meets)) %>%
+  spread(Weather, N_Meets, fill=0) %>%
+  gather(Weather, N_Meets, Dry, Wet) %>%
+  group_by(LocationID, Weather) %>%
+  mutate(N_Weather=sum(N_Meets)) %>%
+  ungroup %>%
+  mutate(Compliance=N_Meets/N_Weather)
+
+df_2014_std_weather %>%
+  filter(Meets != "None") %>%
+  ggplot(aes(Location_Waterbody, Compliance, fill=Meets, color=Agency)) +
+  geom_bar(stat="identity", position="stack") +
+  scale_fill_manual('Standard', values=c("Swim"="deepskyblue", "Boat"="chartreuse3")) +
+  scale_color_manual(values=c("MyRWA"="red", "MWRA"="grey50")) +
+  scale_y_continuous(labels=scales::percent) +
+  facet_grid(Weather~WaterType, scales='free_x', space="free_x") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x="", y="Compliance Fraction", 
+       title="Fraction of Samples Meeting Standards for 2014 by Weather and Location")
+```
+
+```{r check, eval=FALSE}
+# number samples per location
+select(df_2014_std_weather, LocationID, N_Location) %>% 
+  arrange(desc(N_Location)) %>% 
+  unique %>% 
+  as.data.frame
+
+# number samples per location/weather
+select(df_2014_std_weather, LocationID, Weather, N_Location, N_Weather) %>% 
+  unique %>%
+  spread(Weather, N_Weather, fill=0) %>%
+  arrange(desc(N_Location)) %>% 
+  as.data.frame
+```
+
+For each location, the compliance rates for dry and wet weather are then averaged using weights of 75% and 25%, respectively. These weights are based on the long-term average fraction of the year corresponding to each weather condition.
+
+```{r plot-bact-comp, fig.width=10, fig.height=6}
+df_2014_std <- df_2014_std_weather %>%
+  mutate(WeatherWeight=plyr::revalue(Weather, c("Dry"=0.75, "Wet"=0.25)),
+         WeatherWeight=as.numeric(as.character(WeatherWeight))) %>%
+  group_by(Agency, WaterType, Location_Waterbody, LocationID, WaterBodyID, 
+           CharacteristicID, Meets, N_Location) %>%
+  summarise(Compliance=sum(Compliance*WeatherWeight)/sum(WeatherWeight))
+  
+df_2014_std %>%
+  filter(Meets != "None") %>%
+  ggplot(aes(Location_Waterbody, Compliance, fill=Meets, color=Agency)) +
+  geom_bar(stat="identity") +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1),
+                     breaks=seq(0, 1, by=0.2)) +
+  scale_color_manual(values=c("MyRWA"="red", "MWRA"="grey50")) +
+  scale_fill_manual('Standard', values=c("Swim"="deepskyblue", "Boat"="chartreuse3")) +
+  facet_grid(.~WaterType, scales="free_x", space = "free_x") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x="", y="Weight Average % Compliance", 
+       title="Weighted Average % Compliance for 2014")
+```
+
+## Compliance By Water Body
+
+### Locations Weighted by Sample Number
+
+The following figure shows the compliance rate for each waterbody, which is computed by pooling the samples from each location together. This approach effectively weights the average waterbody compliance by the number of samples for each location.
+
+```{r plot-bact-comp-wbody, fig.width=10, fig.height=6}
+df_2014_std_wbody <- df_2014_std %>%
+  group_by(WaterType, WaterBodyID, CharacteristicID, Meets) %>%
+  summarise(Compliance=sum(Compliance*N_Location)/sum(N_Location))
+
+df_2014_std_wbody %>%
+  filter(Meets != "None") %>%
+  ggplot(aes(WaterBodyID, Compliance, fill=Meets)) +
+  geom_bar(stat="identity", color='grey50') +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1),
+                     breaks=seq(0, 1, by=0.2)) +
+  scale_fill_manual('Standard', values=c("Swim"="deepskyblue", "Boat"="chartreuse3")) +
+  facet_grid(.~WaterType, scales="free_x", space = "free_x") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x="", y="Weight Average % Compliance", 
+       title="Weighted Average % Compliance for 2014 by Water Body\nLocations Weighted by Sample Number")
+```
+
+### Locations Equally Weighted
+
+An alternative approach to the waterbody aggregation is to assign equal weight to each location. This calculation is performed by first computing the compliance rate for each location, and then taking the arithmetic mean of compliance rates for all locations within each water body.
+
+```{r plot-bact-comp-wbody-equal, fig.width=10, fig.height=6}
+df_2014_std_wbody_equal <- df_2014_std %>%
+  group_by(WaterType, WaterBodyID, CharacteristicID, Meets) %>%
+  summarise(Compliance=mean(Compliance))
+
+df_2014_std_wbody_equal %>%
+  filter(Meets != "None") %>%
+  ggplot(aes(WaterBodyID, Compliance, fill=Meets)) +
+  geom_bar(stat="identity", color='grey50') +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1),
+                     breaks=seq(0, 1, by=0.2)) +
+  scale_fill_manual('Standard', values=c("Swim"="deepskyblue", "Boat"="chartreuse3")) +
+  facet_grid(.~WaterType, scales="free_x", space = "free_x") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x="", y="Weight Average % Compliance", 
+       title="Weighted Average % Compliance for 2014 by Water Body\nLocations Equally Weighted")
+```
+
+### Remarks
+
+The two methods for aggregating the compliance rates by water body yield similar results. The waterbodies that contain both MyRWA and MWRA locations (e.g. Alewife Brook, Malden River, and Mystic River (Fresh)) show only minor differences between the two methods.
+
+## Rolling Window
+
+The previous computations used only one year of data (2014). However, this limits the amount of data used to compute the compliance rate (and thus the grade) especially for MyRWA baseline stations where only 10-12 samples are collected each year. In some years, all samples happen to occur during dry weather and thus there is no estimate of the compliance under wet weather, which invalidates the 25/75% weighting by weather condition.
+
+With fewer samples, the compliance for each location and waterbody varies from year to year due to high uncertainty in the compliance under dry and wet conditions. For the purpose of assigning an annual set of grades, a more stable metric would be preferred that is not subject to large changes from year to year.
+
+One method for smoothing the annual compliance rates of each waterbody is to use a rolling window containing multiple years of data. For example, a 2-year window would use data from 2013 and 2014 to compute the compliance rate (and thus grade) in 2014.
+
+```{r grade-rolling}
+grade_years <- function(n=1, start=2006, end=2014) {
+  data.frame(GradeYear=rep(seq(start, end, by=1), each=n)) %>% mutate(Year=GradeYear+seq(1-n, 0, by=1))
+}
+
+df_roll <- lapply(seq(1, 6), function(n) {
+  x <- grade_years(n=n, start=2006, end=2014) %>%
+    left_join(df, by="Year") %>%
+    arrange(LocationID, GradeYear, Year, Weather, Meets) %>%
+    group_by(Agency, WaterType, Location_Waterbody, LocationID, WaterBodyID, 
+             CharacteristicID, GradeYear, Weather, Meets) %>%
+    summarise(N_Meets=n()) %>%
+    spread(Meets, N_Meets, fill=0) %>%
+    gather(Meets, N_Meets, Swim, Boat, None) %>%
+    group_by(LocationID, GradeYear) %>%
+    mutate(N_Location=sum(N_Meets)) %>%
+    spread(Weather, N_Meets, fill=0) %>%
+    gather(Weather, N_Meets, Dry, Wet) %>%
+    group_by(LocationID, GradeYear, Weather) %>%
+    mutate(N_Weather=sum(N_Meets)) %>%
+    ungroup %>%
+    mutate(Compliance=N_Meets/N_Weather) %>%
+    mutate(WeatherWeight=plyr::revalue(Weather, c("Dry"=0.75, "Wet"=0.25)),
+           WeatherWeight=as.numeric(as.character(WeatherWeight))) %>%
+    group_by(Agency, WaterType, Location_Waterbody, LocationID, WaterBodyID, 
+             CharacteristicID, GradeYear, Meets, N_Location) %>%
+    summarise(Compliance=sum(Compliance*WeatherWeight)/sum(WeatherWeight)) %>%
+    ungroup
+  x$N_Year <- n
+  x
+}) %>%
+  do.call(rbind, .)
+```
+
+### Freshwater MyRWA Locations
+
+The following figure shows the change in annual compliance rates between windows of 1-6 years for the MyRWA stations in the freshwater portion of the basin. Note that the 1 year window includes only data collected in each given year, and thus there is no overlap in the datasets used to compute the compliance rates. Compliances are not shown in 2009 for the 1 Year window because no wet samples were collected, and thus the mean compliance rate could not be computed.
+
+```{r plot-grade-rolling-myrwa, fig.width=10, fig.height=7}
+df_roll %>%
+  filter(Agency=="MyRWA", WaterType=="Fresh", Meets!="None") %>%
+  mutate(Label=paste(N_Year, "Year")) %>%
+  ggplot(aes(factor(GradeYear), Compliance, fill=Meets)) +
+  geom_bar(stat="identity") +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1),
+                     breaks=seq(0, 1, by=0.2)) +
+  scale_color_manual(values=c("MyRWA"="red", "MWRA"="grey50")) +
+  scale_fill_manual(values=c("Swim"="deepskyblue", "Boat"="chartreuse3")) +
+  facet_grid(Label~LocationID) +
+  labs(x="", y="Weight Average % Compliance", 
+       title="Average % Compliance with Varying Rolling Windows") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5, size=6),
+        axis.text.y=element_text(size=8),
+        strip.text.x=element_text(size=8))
+```
+
+```{r plot-grade-rolling-myrwa-cnt, fig.width=10, fig.height=7, eval=FALSE}
+# sample counts by rolling window
+df_roll %>%
+  filter(Agency=="MyRWA", WaterType=="Fresh") %>%
+  select(LocationID, GradeYear, N_Year, N_Location) %>%
+  unique %>%
+  mutate(Label=paste(N_Year, "Year")) %>%
+  ggplot(aes(factor(GradeYear), N_Location)) +
+  geom_bar(stat="identity") +
+  facet_grid(Label~LocationID) +
+  labs(x="", y="Number of Samples", 
+       title="Number of Samples with Varying Rolling Windows") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5, size=6),
+        axis.text.y=element_text(size=8),
+        strip.text.x=element_text(size=8))
+```
+
+### Freshwater MWRA Locations
+
+This figure shows same results for MWRA freshwater locations. Note that the MWRA locations tend to have many more samples per year than the MyRWA stations, and thus have a larger sample size for each year. Nevertheless, using a multi-year rolling window does have a significant smoothing effect on the change in annual compliance rates.
+
+```{r plot-grade-rolling-mwra, fig.width=10, fig.height=7}
+df_roll %>%
+  filter(Agency=="MWRA", WaterType=="Fresh", Meets!="None") %>%
+  mutate(Label=paste(N_Year, "Year")) %>%
+  ggplot(aes(factor(GradeYear), Compliance, fill=Meets)) +
+  geom_bar(stat="identity") +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1),
+                     breaks=seq(0, 1, by=0.2)) +
+  scale_color_manual(values=c("MyRWA"="red", "MWRA"="grey50")) +
+  scale_fill_manual(values=c("Swim"="deepskyblue", "Boat"="chartreuse3")) +
+  facet_grid(Label~LocationID) +
+  labs(x="", y="Weight Average % Compliance", 
+       title="Average % Compliance with Varying Rolling Windows") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5, size=6),
+        axis.text.y=element_text(size=8),
+        strip.text.x=element_text(size=8))
+```
+
+```{r plot-grade-rolling-mwra-cnt, fig.width=10, fig.height=7, eval=FALSE}
+# sample counts by rolling window
+df_roll %>%
+  filter(Agency=="MWRA", WaterType=="Fresh") %>%
+  select(LocationID, GradeYear, N_Year, N_Location) %>%
+  unique %>%
+  mutate(Label=paste(N_Year, "Year")) %>%
+  ggplot(aes(factor(GradeYear), N_Location)) +
+  geom_bar(stat="identity") +
+  facet_grid(Label~LocationID) +
+  labs(x="", y="Number of Samples", 
+       title="Number of Samples with Varying Rolling Windows") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5, size=6),
+        axis.text.y=element_text(size=8),
+        strip.text.x=element_text(size=8))
+```
+
+### Remarks
+
+Using a rolling window of 3-6 years effectively reduces the year-to-year variability in the annual compliance rate. By doing this, the sample size for each year and location is increased significantly thus yielding a more stable estimate of the annual compliance rates.
+
+An alternative method to increase the sample size is to use bootstrap methods that resample the data for each year. However, for locations with only monthly data (MyRWA Baseline), there is still a good chance that no wet events are sampled in a given year, which would require a different method to address.
+
+For the remainder of this analysis, a 5-year rolling window will be applied to compute the annual compliance rate at each location and waterbody.
+
+# Grade System
+
+## Previous EPA Grade Method
+
+In previous years, USEPA used the following method to assign the annual grade for the Mystic River based on MyRWA Baseline Sampling Data ([excerpt from 2012 Grade Announcement](http://yosemite.epa.gov/opa/admpress.nsf/6427a6b7538955c585257359003f0230/ebcd0cd04595086a85257bc0006a48ef!OpenDocument)).
+
+> ...when assessing water quality to assign a grade to the Mystic River Watershed, EPA uses an average between the overall percentages that water quality met the state criteria for swimming and boating (for 2012, it is 61%) as well as qualitative criteria that are similar to those developed for the Charles River Initiative, as follows:
+>
+> A - met swimming and boating standards nearly all of the time
+> 
+> B - met swimming and boating standards most of the time 
+>
+> C - met swimming standards some of the time, and boating standards most of the time 
+>
+> D - met swimming and boating standards some of the time 
+>
+> F - fail swimming and boating standards most of the time 
+
+The grade is thus a combination of a quantitative evaluation using the mean of swimming and boating compliance, and a qualitative evaluation using the descriptions above. Note, however, the meaning of "nearly all", "most of", and "some of the time" are not defined. The compliance rates are also computed by pooling all samples collected in the watershed. Thus the grade is heavily weighted towards reflecting conditions in the tributaries since there is only one freshwater station on the Mystic River mainstem. 
+
+## Revised Grading Method
+
+The revised grading method is similar to the EPA method, except that it uses a strictly quantitative approach as well as distinguishes between the individual waterbodies.
+
+Similar to the EPA method, the grade is based on the mean of the swimming and boating compliance rates, each of which is computed as the weighted average for wet and dry weather using weights of 25% and 75%. This value is then assigned to individual grades in 5% increments
+
+```{r grades-rev, results="asis"}
+grades <- data.frame(letter=c(rep(c("A","B","C","D"), each=3), "F"),
+                     plusminus=c(rep(c("+"," ","-"), times=4), " "),
+                     min_value=c(seq(1-0.05, by=-0.05, length.out=12), 0),
+                     max_value=seq(1, by=-0.05, length.out=13),
+                     stringsAsFactors=FALSE) %>%
+  mutate(grade=paste(letter, plusminus, sep=''),
+         grade=ordered(grade, levels=grade),
+         label=paste0(round(min_value*100, 0), '% - ', round(max_value*100, 0), '%'))
+select(grades, Grade=grade, "Compliance Range"=label) %>%
+  kable(align='c')
+```
+
+# Results
+
+To review, the methodology used to compute the final grades for each waterbody includes:
+
+1. Annual compliance for swimming and boating is computed as the weighted mean of the compliances under dry and wet weather using weights of 25% and 75%, respectively.
+2. Locations are equally weighted when computing the mean annual compliance rates for each waterbody.
+3. A 5-year rolling window is used to increase the sample size for computing the annual compliance of each year.
+4. The grading system uses a strictly quantitative scale for assigning grades as defined above.
+
+## 2014 Results
+
+```{r grade-function}
+get_grade <- function(x) {
+  for (i in 1:nrow(x)) {
+    y <- x[i, ]
+    average_compliance <- y$Compliance[1]
+    idx <- min(which(grades$min_value < average_compliance))
+    x[i, 'Grade'] <- grades$grade[idx]
+  }
+  x$Grade <- ordered(x$Grade, levels=grades$grade)
+  x
+}
+```
+
+
+### Compliance By Location
+
+This figure shows the annual compliance rate of each location for 2014 (note that this includes data from 2010-2014 due to the 5-year rolling window). The red points are the mean of the swimming and boating compliance, and thus the value used to assign each grade.
+
+```{r plot-result-2014-loc, fig.width=10, fig.height=6}
+df_2014_std_grade <- filter(df_roll, GradeYear==2014, N_Year==5) %>%
+  filter(Meets != "None") %>%
+  spread(Meets, Compliance) %>%
+  mutate(Compliance=(Swim*2+Boat)/2) %>%
+  get_grade
+
+df_2014_std_grade %>%
+  arrange(WaterType, Grade, desc(Compliance)) %>%
+  mutate(Location_Waterbody=ordered(as.character(Location_Waterbody), levels=unique(Location_Waterbody))) %>%
+  gather(Meets, ComplianceMeet, Swim, Boat) %>%
+  arrange(WaterType, Location_Waterbody, Meets) %>%
+  ggplot(aes(Location_Waterbody, ComplianceMeet)) +
+  geom_bar(aes(fill=Meets, color=Agency), stat="identity") +
+  geom_point(aes(y=Compliance), color='red') +
+  geom_text(aes(x = Location_Waterbody, label=Grade), y=1.05, size=4, 
+            data=select(df_2014_std_grade, Agency, WaterType, Location_Waterbody, Grade) %>% unique) +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1.07),
+                     breaks=seq(0, 1, by=0.1)) +
+  scale_color_manual(values=c("MyRWA"="red", "MWRA"="grey50")) +
+  scale_fill_manual('Standard', values=c("Swim"="deepskyblue", "Boat"="chartreuse3")) +
+  facet_grid(.~WaterType, scales="free_x", space = "free_x") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x="", y="Weight Average % Compliance", 
+       title="Weighted Average % Compliance for Grade Year 2014 (Data from 2010-2014)")
+
+```
+
+### By Waterbody
+
+This figure shows the annual compliance rate of each waterbody for 2014 (data from 2010-2014) using all MyRWA and MWRA data and by assigning equal weights to the locations with each waterbody.
+
+```{r plot-result-2014-wbody, fig.width=10, fig.height=6}
+df_2014_std_grade_wbody <- filter(df_roll, GradeYear==2014, N_Year==5) %>%
+  group_by(WaterType, WaterBodyID, CharacteristicID, GradeYear, Meets, N_Year) %>%
+  summarise(Compliance=mean(Compliance)) %>%
+  filter(Meets != "None") %>%
+  spread(Meets, Compliance) %>%
+  mutate(Compliance=(Swim*2+Boat)/2) %>%
+  get_grade
+
+df_2014_std_grade_wbody %>%
+  arrange(WaterType, Grade, desc(Compliance)) %>%
+  mutate(WaterBodyID=ordered(as.character(WaterBodyID), 
+                             levels=unique(WaterBodyID))) %>%
+  gather(Meets, ComplianceMeet, Swim, Boat) %>%
+  arrange(WaterType, WaterBodyID, Meets) %>%
+  ggplot(aes(WaterBodyID, ComplianceMeet)) +
+  geom_bar(aes(fill=Meets), stat="identity", color='grey50') +
+  geom_point(aes(y=Compliance), color='red') +
+  geom_text(aes(x = WaterBodyID, label=Grade), y=1.05, size=4, 
+            data=select(df_2014_std_grade_wbody, WaterType, WaterBodyID, Grade) %>% unique) +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1.07),
+                     breaks=seq(0, 1, by=0.1)) +
+  scale_fill_manual('Standard', values=c("Swim"="deepskyblue", "Boat"="chartreuse3")) +
+  facet_grid(.~WaterType, scales="free_x", space = "free_x") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x="", y="Weight Average % Compliance", 
+       title="Weighted Average % Compliance for Grade Year 2014 (Data from 2010-2014)\nMyRWA and MWRA Data")
+
+```
+
+#### MyRWA Data Only
+
+This figure shows the grades for each waterbody based only on the MyRWA data. 
+
+```{r plot-result-2014-wbody-myrwa, fig.width=10, fig.height=6}
+df_2014_std_grade_wbody_myrwa <- filter(df_roll, Agency=="MyRWA", GradeYear==2014, N_Year==5) %>%
+  group_by(WaterType, WaterBodyID, CharacteristicID, GradeYear, Meets, N_Year) %>%
+  summarise(Compliance=mean(Compliance)) %>%
+  filter(Meets != "None") %>%
+  spread(Meets, Compliance) %>%
+  mutate(Compliance=(Swim*2+Boat)/2) %>%
+  get_grade
+
+df_2014_std_grade_wbody_myrwa %>%
+  arrange(WaterType, Grade, desc(Compliance)) %>%
+  mutate(WaterBodyID=ordered(as.character(WaterBodyID), 
+                             levels=unique(WaterBodyID))) %>%
+  gather(Meets, ComplianceMeet, Swim, Boat) %>%
+  arrange(WaterType, WaterBodyID, Meets) %>%
+  ggplot(aes(WaterBodyID, ComplianceMeet)) +
+  geom_bar(aes(fill=Meets), stat="identity", color='grey50') +
+  geom_point(aes(y=Compliance), color='red') +
+  geom_text(aes(x = WaterBodyID, label=Grade), y=1.05, size=4, 
+            data=select(df_2014_std_grade_wbody_myrwa, WaterType, WaterBodyID, Grade) %>% unique) +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1.07),
+                     breaks=seq(0, 1, by=0.1)) +
+  scale_fill_manual('Standard', values=c("Swim"="deepskyblue", "Boat"="chartreuse3")) +
+  facet_grid(.~WaterType, scales="free_x", space = "free_x") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x="", y="Weight Average % Compliance", 
+       title="Weighted Average % Compliance for Grade Year 2014 (Data from 2010-2014)\nMyRWA Data Only")
+
+```
+
+## Historical Compliance
+
+This figure shows the compliance and grades for each waterbody since 2006. Note that some saltwater locations show fewer years since MyRWA did not sample these locations until 2008.
+
+```{r plot-grade-hist, fig.width=10, fig.height=8}
+df_std_grade_wbody <- filter(df_roll, N_Year==5) %>%
+  group_by(WaterType, WaterBodyID, CharacteristicID, GradeYear, Meets, N_Year) %>%
+  summarise(Compliance=mean(Compliance)) %>%
+  filter(Meets != "None") %>%
+  spread(Meets, Compliance) %>%
+  mutate(Compliance=(Swim*2+Boat)/2) %>%
+  get_grade
+
+df_std_grade_wbody %>%
+  arrange(WaterType, Grade, desc(Compliance)) %>%
+  mutate(WaterBodyID=ordered(as.character(WaterBodyID), 
+                             levels=unique(WaterBodyID))) %>%
+  gather(Meets, ComplianceMeet, Swim, Boat) %>%
+  arrange(WaterType, WaterBodyID, Meets) %>%
+  ggplot(aes(factor(GradeYear), ComplianceMeet)) +
+  geom_bar(aes(fill=Meets), stat="identity", color='grey50') +
+  geom_point(aes(y=Compliance), color='red') +
+  geom_text(aes(x = factor(GradeYear), label=Grade), y=1.07, size=3, 
+            data=select(df_std_grade_wbody, WaterType, WaterBodyID, GradeYear, Grade) %>% unique) +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1.1),
+                     breaks=seq(0, 1, by=0.2)) +
+  scale_fill_manual('Standard', values=c("Swim"="deepskyblue", "Boat"="chartreuse3")) +
+  facet_wrap(~WaterType+WaterBodyID) +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x="", y="Weight Average % Compliance", 
+       title="Weighted Average % Compliance from 2006-2014 (5 Year Rolling Window)\nMyRWA and MWRA Data")
+
+```
+
+### MyRWA Only
+
+This figure shows the historical compliance and grades using only MyRWA data.
+
+```{r plot-grade-hist-myrwa, fig.width=10, fig.height=8}
+df_std_grade_wbody_myrwa <- filter(df_roll, Agency=="MyRWA", N_Year==5) %>%
+  group_by(WaterType, WaterBodyID, CharacteristicID, GradeYear, Meets, N_Year) %>%
+  summarise(Compliance=mean(Compliance)) %>%
+  filter(Meets != "None") %>%
+  spread(Meets, Compliance) %>%
+  mutate(Compliance=(Swim*2+Boat)/2) %>%
+  get_grade
+
+df_std_grade_wbody_myrwa %>%
+  arrange(WaterType, Grade, desc(Compliance)) %>%
+  mutate(WaterBodyID=ordered(as.character(WaterBodyID), 
+                             levels=unique(WaterBodyID))) %>%
+  gather(Meets, ComplianceMeet, Swim, Boat) %>%
+  arrange(WaterType, WaterBodyID, Meets) %>%
+  ggplot(aes(factor(GradeYear), ComplianceMeet)) +
+  geom_bar(aes(fill=Meets), stat="identity", color='grey50') +
+  geom_point(aes(y=Compliance), color='red') +
+  geom_text(aes(x = factor(GradeYear), label=Grade), y=1.07, size=3, 
+            data=select(df_std_grade_wbody_myrwa, WaterType, WaterBodyID, GradeYear, Grade) %>% unique) +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1.1),
+                     breaks=seq(0, 1, by=0.2)) +
+  scale_fill_manual('Standard', values=c("Swim"="deepskyblue", "Boat"="chartreuse3")) +
+  facet_wrap(~WaterType+WaterBodyID) +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x="", y="Weight Average % Compliance", 
+       title="Weighted Average % Compliance for 2006-2014 (5 Year Rolling Window)\nMyRWA Data Only")
+
+```
+
+## Basin-wide
+
+```{r}
+df_roll_basin <- lapply(seq(1, 5), function(n) {
+  x <- grade_years(n=n, start=2006, end=2014) %>%
+    left_join(filter(df, Agency=="MyRWA"), by="Year") %>%
+    arrange(GradeYear, Year, Weather, Meets) %>%
+    group_by(GradeYear, Weather, Meets) %>%
+    summarise(N_Meets=n()) %>%
+    spread(Meets, N_Meets, fill=0) %>%
+    gather(Meets, N_Meets, Swim, Boat, None) %>%
+    group_by(GradeYear) %>%
+    mutate(N_Sample=sum(N_Meets)) %>%
+    spread(Weather, N_Meets, fill=0) %>%
+    gather(Weather, N_Meets, Dry, Wet) %>%
+    group_by(GradeYear, Weather) %>%
+    mutate(N_Weather=sum(N_Meets)) %>%
+    ungroup %>%
+    mutate(Compliance=N_Meets/N_Weather) %>%
+    mutate(WeatherWeight=plyr::revalue(Weather, c("Dry"=0.75, "Wet"=0.25)),
+           WeatherWeight=as.numeric(as.character(WeatherWeight))) %>%
+    group_by(GradeYear, Meets, N_Sample) %>%
+    summarise(Compliance=sum(Compliance*WeatherWeight)/sum(WeatherWeight)) %>%
+    ungroup
+  x$N_Year <- n
+  x
+}) %>%
+  do.call(rbind, .)
+```
+
+In previous years, USEPA pooled all available data to compute a single grade for the entire watershed. For comparison, the following figure shows the result of this approach using only MyRWA data with multiple rolling windows. The 1-Year window should yield the same compliance rates used for previous EPA grade assessments. Note that the grade, however, is different because the EPA grade is based on both a quantitative and qualitative assessment as described above with grade thresholds that probably differ from those used here.
+
+```{r plot-grade-basin, fig.width=6, fig.height=8}
+df_basin <- filter(df_roll_basin, Meets!="None") %>%
+  spread(Meets, Compliance) %>%
+  mutate(Compliance=(Swim*2+Boat)/2) %>%
+  get_grade
+
+df_basin %>%
+  gather(Meets, ComplianceMeet, Swim, Boat) %>%
+  arrange(Meets) %>%
+  mutate(Label=paste(N_Year, "Years")) %>%
+  ggplot(aes(factor(GradeYear), ComplianceMeet)) +
+  geom_bar(aes(fill=Meets), stat="identity", color='grey50') +
+  geom_point(aes(y=Compliance), color='red') +
+  geom_text(aes(x = factor(GradeYear), label=Grade), y=1.07, size=3, 
+            data=select(df_basin, N_Year, GradeYear, Grade) %>% 
+              unique %>% 
+              mutate(Label=paste(N_Year, "Years"))) +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1.1),
+                     breaks=seq(0, 1, by=0.2)) +
+  scale_fill_manual('Standard', values=c("Swim"="deepskyblue", "Boat"="chartreuse3")) +
+  facet_grid(Label~.) +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x="", y="Weight Average % Compliance", 
+       title="Basin-wide Compliance from 2006-2014\nMyRWA Data Only")
+
+```
+
+This table lists the compliance rates for swimming and boating, as well as the average compliance rate and resulting grade for each year. The results in this table are based only one 1 Year of data (i.e. no rolling window).
+
+```{r table-basin-grade-5}
+filter(df_basin, N_Year==1) %>%
+  mutate(Boat=Boat+Swim,
+         Swim=scales::percent(Swim),
+         Boat=scales::percent(Boat),
+         Compliance=scales::percent(Compliance)) %>%
+  select(-N_Year) %>%
+  rename(Year=GradeYear,
+         "No. Samples"=N_Sample,
+         "Swim Compliance"=Swim,
+         "Boat Compliance"=Boat,
+         "Avg Compliance"=Compliance) %>%
+  kable(align='c')
+```
+
+It is important to note that MyRWA samples the freshwater and saltwater locations on different days. Therefore, the distribution of wet/dry sample days is not consistent between the two groups of locations. 
+
+# Conclusions
+
+The following conclusions are based on this analysis:
+
+- There is wide variation in the compliance and resulting grades throughout the watershed. Tributaries tend to have lower compliance than mainstem stations. The freshwater portion of Mystic River mainstem has been acheiving a grade of B+ or better since 2006 (based on both MWRA and MyRWA data).
+- Including the MWRA data greatly increases the number of samples, in particular for the mainstem of the Mystic River. However, the MWRA data do introduce some seasonal bias because samples are primarily collected during the recreation season.
+- Weighting the waterbody compliance by the number of samples at each location produces similar results as using equal weights among the locations.
+- Using a multi-year rolling window to evaluate the compliance and grade for each waterbody results in a more stable assessment. This approach effectively increases the sample size used to compute the rates of compliance. This is particularly useful for locations and waterbodies that only have MyRWA data, which is collected monthly. In some years, no wet weather samples were collected and thus the weighted average compliance standardized to 25% and 75% wet and dry weather cannot be directly computed.
+
+```{r export}
+select(df, ID, Agency, ProjectID, WaterType, WaterBodyID, LocationID, 
+       CharacteristicID, Datetime, ResultValue, Units, Qualifier, 
+       FlagID, Precip48, Weather, MeetStd=Meets) %>%
+  arrange(Agency, LocationID, Datetime) %>%
+  write.csv(file="bacteria_dataset.csv", row.names=FALSE)
+filter(loc, LocationID %in% unique(df$LocationID)) %>%
+  select(-Location_Waterbody) %>%
+  write.csv(file="sample_locations.csv", row.names=FALSE)
+```
+
+
+
+
+
+
+
+
+
+```{r plot-boat-cume, eval=FALSE}
+# cumulative distribution of relative boat compliance
+df_2014_std %>%
+  spread(Meets, Compliance) %>%
+  mutate(BoatFrac=Boat/(1-Swim),
+         BoatPtile=cume_dist(BoatFrac)) %>%
+  arrange(desc(BoatPtile)) %>%
+  ggplot(aes(BoatPtile, BoatFrac)) +
+  geom_point()
+```
+
+```{r plot-corr-boat-swim, eval=FALSE}
+# Strong correlation between swim and boat compliances
+p1 <- df_2014_std %>%
+  spread(Meets, Compliance) %>%
+  mutate(Boat=Boat+Swim) %>%
+  ggplot(aes(Swim, Boat)) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  xlim(0, 1) +
+  # ylim(0, 1) +
+  facet_wrap(~WaterType) +
+  labs(x="Swimming Compliance", y="Boating Compliance",
+       title="Swimming vs Boating Compliance for 2010-2014")
+
+p2 <- df_2014_std %>%
+  spread(Meets, Compliance) %>%
+  ggplot(aes(Swim, Boat/(1-Swim))) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  xlim(0, 1) +
+  # ylim(0, 1) +
+  facet_wrap(~WaterType) +
+  labs(x="Swimming Compliance", y="Boating Compliance Relative to Swimming\nBoat/(1-Swim)",
+       title="Swimming vs Relative Boating Compliance for 2010-2014")
+
+grid.arrange(p1, p2, nrow=2)
+```
+
+```{r plot-corr-avg-swim, eval=FALSE}
+# correlation between average and swimming compliance
+df_2014_std %>%
+  spread(Meets, Compliance) %>%
+  mutate(Compliance=(Swim+Boat)/2) %>%
+  ggplot(aes(Compliance, Swim)) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  # xlim(0, 1) +
+  ylim(0, 1) +
+  facet_wrap(~WaterType) +
+  labs(x="Average Compliance", y="Swimming Compliance",
+       title="Swimming vs Average Compliance for 2010-2014")
+
+```
+
+```{r plot-grade-dot, eval=FALSE}
+# grade dot plots
+df_roll %>%
+  filter(N_Year==5) %>%
+  spread(Meets, Compliance) %>%
+  mutate(Compliance=(Swim+Boat/2)) %>%
+  get_grade %>%
+  mutate(Grade=ordered(as.character(Grade), levels=rev(levels(Grade)))) %>%
+  # ggplot(aes(GradeYear, AVG)) +
+  ggplot(aes(GradeYear, Grade)) +
+  geom_point() +
+  facet_wrap(~LocationID)
+```
+
+```{r plot-bact-2014-cnt-season, fig.width=8, fig.height=6, eval=FALSE}
+# This figure shows the number of sampling events in Summer (May-Oct) and Winter (Nov-Apr) at each location. Note that the MyRWA stations all have about 10-12 samples as expected due to the monthly sampling schedule. The MWRA locations vary and tend to have far more samples in summer than winter. This dataset includes both the `CSORWM` and `BHWQM` programs, which may have different sampling schedules.
+
+filter(df, Year == 2014) %>%
+  mutate(Season=ifelse(Month %in% seq(5, 10), "Summer", "Winter")) %>%
+  group_by(Agency, Location_Waterbody, LocationID,
+           WaterBodyID, WaterType, CharacteristicID, Season) %>%
+  summarise(N=n()) %>%
+  ungroup %>%
+  ggplot(aes(Location_Waterbody, N, fill=Season)) +
+  geom_bar(stat="identity", position="stack") +
+  facet_grid(.~WaterType, scales='free_x', space="free_x") +
+  scale_fill_manual(values=c(Summer='orangered', Winter='deepskyblue')) +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x='', y="Number of Samples in 2014 by Season",
+       title="Number of Sampling Events in 2014")
+```
+
+```{r plot-bact-2014-cnt-weather, fig.width=8, fig.height=6, eval=FALSE}
+# This figure shows the number of samples collected in Dry and Wet weather at each location. Note that the MyRWA stations are almost 50% samples in wet weather, which is high relative to the expected frequency of wet weather conditions (25%) shown in the Precipitation Data section. Some of the MWRA stations, such as those in Alewife Brook, also have relatively high fractions of wet weather. This could be the result of the `CSORWM` program targetting wet weather sampling events.
+
+filter(df, Year == 2014) %>%
+  group_by(Agency, Location_Waterbody, CharacteristicID, WaterType, Weather) %>%
+  summarise(N=n()) %>%
+  ungroup %>%
+  ggplot(aes(Location_Waterbody, N, fill=Weather)) +
+  geom_bar(stat="identity", position="stack") +
+  scale_fill_weather +
+  labs(x='') +
+  facet_grid(.~WaterType, scales='free_x', space="free_x") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x="", y="Fraction",
+       title="Number of Samples in 2014 by Weather")
+```
+
+```{r plot-bact-hist-cnt, fig.width=8, fig.height=6, eval=FALSE}
+# This figure shows the number of samples collected at each site and grouped by weather conditions. This reveals a potential issue as some years (2003, 2009) have only dry weather samples. Therefore the computation of mean compliance by aggregating over dry and wet weather is incorrect.
+
+filter(df, Year %in% seq(2003, 2014),
+       LocationID %in% c("MIB001", "MIC004", "MYR071", "MAR036")) %>%
+  filter(!(LocationID=="MAR036" & CharacteristicID=="ENT")) %>%
+  group_by(Location_Waterbody, CharacteristicID, Year, Weather) %>%
+  summarise(N=n()) %>%
+  ggplot(aes(factor(Year), N, fill=Weather)) +
+  geom_bar(stat="identity") +
+  facet_wrap(~Location_Waterbody+CharacteristicID) +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  scale_fill_weather +
+  labs(x="", y="Number of Samples",
+       title="Number of Samples at Selected MyRWA Stations from 2003-2014")
+
+```
+
+```{r plot-bact-2014-meets, fig.width=10, fig.height=6, eval=FALSE}
+# This figure shows the fraction of total samples that meet the swimming and boating standards (or don't meet either standard) under dry and wet weather conditions in 2014.
+
+filter(df, Year == 2014) %>%
+  group_by(Agency, WaterType, Location_Waterbody, LocationID,
+           WaterBodyID, CharacteristicID, Weather, Meets) %>%
+  summarise(N_Meets=n()) %>%
+  ungroup %>%
+  ggplot(aes(Location_Waterbody, N_Meets, fill=Meets)) +
+  geom_bar(stat="identity", position="fill") +
+  scale_fill_manual(values=c("Swim"="deepskyblue", "Boat"="chartreuse3",
+                             "None"="orangered")) +
+  scale_y_continuous(labels=scales::percent) +
+  facet_grid(Weather~WaterType, scales='free_x', space="free_x") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x="", y="Compliance Fraction",
+       title="Fraction of Samples Meeting Standards in 2014 by Weather and Location")
+```
+
+```{r plot-bact-2014-comp-wbody, fig.width=8, fig.height=6, eval=FALSE}
+# This figure shows the same sample fractions in compliance but grouped by water body. The data were grouped by simply combining all samples from the individual locations. Therefore, locations with more data would be given higher weight in computing the overall compliances.
+
+filter(df, Year == 2014) %>%
+  group_by(WaterType, WaterBodyID, CharacteristicID, Weather, Meets) %>%
+  summarise(N_Meets=n()) %>%
+  ggplot(aes(WaterBodyID, N_Meets, fill=Meets)) +
+  geom_bar(stat="identity", position="fill") +
+  scale_fill_manual(values=c("Swim"="deepskyblue", "Boat"="chartreuse3",
+                             "None"="orangered")) +
+  scale_y_continuous(labels=scales::percent) +
+  facet_grid(Weather~WaterType, scales='free_x', space="free_x") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x="", y="Compliance Fraction",
+       title="Fraction Events Meeting Standards in 2014 by Weather and Waterbody")
+```
+
+```{r plot-bact-2014-comp-std, fig.width=10, fig.height=6, eval=FALSE}
+# For each station, the fraction of samples in compliance is aggregated over the two weather conditions by computing a weighted mean of Dry and Wet weather compliance. The weights are based on the long-term mean frequency of Dry and Wet weather (75% and 25%). The average % compliance for each standard and at each location is shown in the following figure. Note that MyRWA stations are bordered in red.
+
+# This figure thus represents the compliance with each standard under a typical year (25% wet weather). It thus removes the hydrologic variability and any potential bias associated with sampling more wet events relative to the annual frequency of wet weather.
+
+filter(df, Year == 2014) %>%
+  group_by(Agency, WaterType, Location_Waterbody, LocationID,
+           WaterBodyID, CharacteristicID, Weather, Meets) %>%
+  summarise(N_Meets=n()) %>%
+  mutate(N_Weather=sum(N_Meets)) %>%
+  group_by(LocationID, WaterBodyID, CharacteristicID) %>%
+  mutate(N_Loc=sum(N_Meets)) %>%
+  ungroup %>%
+  filter(Meets != "None") %>%
+  mutate(Compliance=N_Meets/N_Weather) %>%
+  select(-N_Meets, -N_Weather) %>%
+  spread(Weather, Compliance, fill=0) %>%
+  mutate(WtdAvg=Dry*0.75+Wet*0.25) %>%
+  gather(Weather, Compliance, Dry:WtdAvg) %>%
+  arrange(WaterType, Location_Waterbody, CharacteristicID, Meets, Weather) %>%
+  filter(Weather=="WtdAvg") %>%
+  ggplot(aes(Location_Waterbody, Compliance, fill=Meets, color=Agency)) +
+  geom_bar(stat="identity") +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1),
+                     breaks=seq(0, 1, by=0.2)) +
+  scale_color_manual(values=c("MyRWA"="red", "MWRA"="grey50")) +
+  scale_fill_manual(values=c("Swim"="deepskyblue", "Boat"="chartreuse3")) +
+  facet_grid(.~WaterType, scales="free_x", space = "free_x") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x="", y="Weight Average % Compliance",
+       title="Average % Compliance in 2014")
+```
+
+```{r plot-bact-2014-comp, fig.width=10, fig.height=6, eval=FALSE}
+# This figure shows the mean compliance computed over the swimming and boating standards (effectively the mid-point of the green bars in the previous figure). This overall average compliance rate was previously used to assign grades for the entire watershed. However, it does not account for the variability between the relative compliance meeting boating and swimming standards.
+
+filter(df, Year == 2014) %>%
+  group_by(WaterType, Agency, Location_Waterbody, LocationID, WaterBodyID,
+           CharacteristicID, Weather, Meets) %>%
+  summarise(N_Meets=n()) %>%
+  mutate(N_Weather=sum(N_Meets)) %>%
+  group_by(LocationID, WaterBodyID, CharacteristicID) %>%
+  mutate(N_Loc=sum(N_Meets)) %>%
+  ungroup %>%
+  filter(Meets != "None") %>%
+  spread(Meets, N_Meets, fill=0) %>%
+  mutate(Boat=Swim+Boat) %>%
+  gather(Meets, N_Meets, Swim:Boat) %>%
+  arrange(Location_Waterbody, CharacteristicID, Meets, Weather) %>%
+  mutate(Compliance=N_Meets/N_Weather) %>%
+  select(-N_Weather, -N_Meets) %>%
+  spread(Weather, Compliance, fill=0) %>%
+  mutate(WtdAvg=Dry*0.75+Wet*0.25) %>%
+  gather(Weather, Compliance, Dry:WtdAvg) %>%
+  arrange(Location_Waterbody, CharacteristicID, Meets, Weather) %>%
+  filter(Weather=="WtdAvg") %>%
+  spread(Meets, Compliance, fill=0) %>%
+  mutate(WtdAvg=(Swim+Boat)/2) %>%
+  gather(Meets, Compliance, Swim:WtdAvg) %>%
+  filter(Meets=="WtdAvg") %>%
+  ggplot(aes(Location_Waterbody, Compliance, color=Agency)) +
+  geom_bar(stat="identity", fill="grey50") +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1),
+                     breaks=seq(0, 1, by=0.2)) +
+  facet_grid(.~WaterType, scales="free_x", space = "free_x") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  scale_color_manual(values=c("MyRWA"="orangered", "MWRA"="grey50")) +
+  labs(x="", y="Weight Average % Compliance",
+       title="Average % Compliance in 2014")
+```
+
+```{r plot-bact-2014-comp-std-wbody, fig.width=10, fig.height=6, eval=FALSE}
+# This figure shows the weighted compliance rates for each waterbody by grouping all samples from the individual locations.
+
+filter(df, Year == 2014) %>%
+  group_by(WaterType, WaterBodyID, CharacteristicID, Weather, Meets) %>%
+  summarise(N_Meets=n()) %>%
+  mutate(N_Weather=sum(N_Meets)) %>%
+  ungroup %>%
+  filter(Meets != "None") %>%
+  mutate(Compliance=N_Meets/N_Weather) %>%
+  select(-N_Meets, -N_Weather) %>%
+  spread(Weather, Compliance, fill=0) %>%
+  mutate(WtdAvg=Dry*0.75+Wet*0.25) %>%
+  gather(Weather, Compliance, Dry:WtdAvg) %>%
+  arrange(WaterBodyID, CharacteristicID, Meets, Weather) %>%
+  filter(Weather=="WtdAvg") %>%
+  ggplot(aes(WaterBodyID, Compliance, fill=Meets)) +
+  geom_bar(stat="identity", color='grey50') +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1),
+                     breaks=seq(0, 1, by=0.2)) +
+  facet_grid(.~WaterType, scales="free_x", space="free_x") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  scale_fill_manual(values=c("Swim"="deepskyblue", "Boat"="chartreuse3")) +
+  labs(x="", y="Weight Average % Compliance",
+       title="Average % Compliance in 2014 by Water Body")
+```
+
+```{r alt-grade-system, eval=FALSE}
+# This grading method uses the compliance for swimming as the primary letter part of the grade (A, B, ...), and the relatively compliance for boating as the minor part of the grade (+/ /-).
+
+# If the boating standard is more than 66% of the difference between 100% and the swimming compliance, the grade is adjusted up to a "+". If it is between 33% and 66%, then no adjustment. And if it is less than 33%, then it is a "-".
+
+grades_swim <- data.frame(letter=c(rep(c("A","B","C","D"), each=3), "F"),
+                     plusminus=c(rep(c("+"," ","-"), times=4), " "),
+                     stringsAsFactors=FALSE) %>%
+  mutate(grade=paste(letter, plusminus, sep=''),
+         grade=ordered(grade, levels=grade),
+         swim=as.numeric(plyr::revalue(letter,
+                                       c(A=90, B=70, C=50, D=30, F=0))),
+         boat=as.numeric(plyr::revalue(plusminus,
+                                       c("+"=66, " "=33, "-"=0))),
+         boat=(100-swim)*boat/100 + swim,
+         boat=boat-swim,
+         boat=ifelse(letter=="F", swim, boat)) %>%
+  filter(!(grade %in% c('F+', 'F-')))
+
+select(grades_swim, grade, boat, swim) %>%
+  gather(standard, value, -grade) %>%
+  mutate(standard=ordered(standard, levels=c('swim', 'boat'))) %>%
+  arrange(standard, grade) %>%
+  ggplot(aes(grade, value/100, fill=standard)) +
+  geom_bar(stat="identity", position="stack", color='grey50') +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1),
+                     breaks=seq(0, 1, by=0.2)) +
+  scale_fill_manual('Standard',
+                    values=c("swim"="deepskyblue", "boat"="chartreuse3")) +
+  labs(x="Grade", y="Compliance %")
+
+grade <- function(x) {
+  res <- character(0)
+  for (i in 1:nrow(x)) {
+    y <- x[i, ]
+    letter_grade <- grades_swim[min(which(y$Swim[1]*100 > grades_swim$swim)), 'letter']
+
+    minor_grade <- ifelse(y$Boat[1] >= (1-y$Swim[1])*(2/3), "+",
+                          ifelse(y$Boat[1] < (1-y$Swim[1])*(1/3), "-", " "))
+    if (letter_grade == "F") minor_grade <- " "
+    x[i, 'Grade'] <- paste0(letter_grade, minor_grade)
+  }
+  x$Grade <- ordered(x$Grade, levels=grades_swim$grade)
+  x
+}
+```
+
+```{r tab-grades-swim, results="asis", eval=FALSE}
+# The following table lists the specific numeric criteria for each grade.
+
+grades_swim %>%
+  mutate(swim_min=swim,
+         swim_max=ifelse(letter=="A", Inf,
+                         ifelse(letter=="F", 30, swim+20)),
+         swim_text=ifelse(swim_max==Inf, paste(">=", swim_min),
+                          ifelse(swim_min==0, paste("<", swim_max),
+                                 paste(swim_min, "-", swim_max))),
+         boat=boat+swim,
+         boat_min=boat,
+         boat_max=ifelse(plusminus=="+", Inf,
+                         ifelse(letter=="F", 100, lag(boat))),
+         boat_text=ifelse(boat_max==Inf, paste(">=", round(boat_min, digits=0)),
+                          paste(round(boat_min, digits=0), "-", round(boat_max, digits=0)))) %>%
+  select(Grade=grade, `Swim Compliance`=swim_text, `Boat Compliance`=boat_text) %>%
+  kable(., format="markdown", align = 'c')
+```
