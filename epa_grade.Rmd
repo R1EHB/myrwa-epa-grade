@@ -1,11 +1,12 @@
 ---
-title: 'MyRWA: EPA Grade'
-author: "Jeffrey D Walker, PhD; Andy Hrycyna; Patrick Herron, PhD; Nathan Sanders; Veronique Vicard"
+title: 'MyRWA: Annual EPA Grade Assessment - 2014'
+author: "Jeffrey D Walker, PhD; Andy Hrycyna; Nathan Sanders; Veronique Vicard; Patrick Herron, PhD"
 date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output: 
   html_document: 
     number_sections: yes
     toc: yes
+    toc_depth: 2
     css: styles.css
 ---
 
@@ -27,17 +28,31 @@ scale_fill_meets <- scale_fill_manual('Standard', values=c("Swim"="deepskyblue",
                                                            "Boat"="chartreuse3"))
 ```
 
+```{r download}
+# download files if not exist
+if (!file.exists("db_locations.csv")) {
+  download.file("https://s3.amazonaws.com/myrwa/epa-grade-2014/db_locations.csv", 
+                destfile="db_locations.csv", method="curl")
+}
+if (!file.exists("db_bacteria.csv")) {
+  download.file("https://s3.amazonaws.com/myrwa/epa-grade-2014/db_bacteria.csv", 
+                destfile="db_bacteria.csv", method="curl")
+}
+if (!file.exists("logan_hourly.csv")) {
+  download.file("https://s3.amazonaws.com/myrwa/epa-grade-2014/logan_hourly.csv", 
+                destfile="logan_hourly.csv", method="curl")
+}
+```
+
 ```{r bact-std}
 bact_std <- data.frame(WaterType=c("Saline", "Fresh"),
                        CharacteristicID=c("ENT", "ECOLI"),
                        BoatStd=c(350, 1260),
                        SwimStd=c(104, 235))
-
-
 ```
 
 ```{r load-precip}
-prcp <- read.csv(file = "csv/logan_hourly.csv", stringsAsFactors=FALSE) %>%
+prcp <- read.csv(file = "logan_hourly.csv", stringsAsFactors=FALSE) %>%
   mutate(datetime=ymd_hms(datetime, tz="EST")) %>%
   rename(Datetime=datetime, Precip=prcp_in) %>%
   as.data.frame
@@ -47,13 +62,20 @@ prcp$Weather <- factor(ifelse(prcp$Precip48 > 0.25, 'Wet', 'Dry'))
 ```
 
 ```{r load-bact}
-load('rdata/bact.Rdata')
+df <- read.csv("db_bacteria.csv", stringsAsFactors=FALSE) %>%
+  mutate(Datetime=ymd_hms(Datetime, tz="EST"))
+loc <- read.csv("db_locations.csv", stringsAsFactors=FALSE)
 
 # surface samples only
 df <- mutate(df, 
               SampleDepthType=as.character(SampleDepthType),
               SampleDepthType=ifelse(is.na(SampleDepthType), "S", SampleDepthType)) %>%
   filter(SampleDepthType=="S")
+
+# exclude flags
+df_flagged <- filter(df, !is.na(FlagID))
+df <- filter(df, is.na(FlagID))
+stopifnot(all(df_flagged$FlagID=="L"))
 
 # locations
 loc <- rename(loc, LocationID=ID) %>%
@@ -93,12 +115,6 @@ df <- mutate(df, Year=year(Datetime), Month=month(Datetime))
 
 # fix duplicate date
 df <- df[-which(df$LocationID=="MWRA052" & as.Date(df$Datetime)==as.Date("1991-02-07") & df$ID==279878),]
-
-# keep only 2002-2014 data
-# df <- filter(df, Year>=2002, Year<=2014)
-
-# save locations to csv for gis plotting
-# write_csv(loc, path="csv/locations.csv")
 ```
 
 ```{r check-bact}
@@ -110,7 +126,9 @@ df %>%
     stopifnot(all(x$N==1))
   })
 
+stopifnot(all(is.na(df$FlagID)))
 stopifnot(all(!is.na(df$ResultValue)))
+stopifnot(all((df$Weather=="Dry" & df$Precip48 <= 0.25) | (df$Weather=="Wet" & df$Precip48 > 0.25)))
 ```
 
 ```{r grades}
@@ -327,18 +345,20 @@ This document summarizes an analysis of indicator bacteria data collected in the
 2) evaluate a quantitative methodology for assigning letter grades based on the previous EPA grading system
 3) explore alternative methods for computing the compliance and for evaluating individual water bodies
 
-This table lists the relevant water quality standards for boating and swimming. The Enterococcus (ENT) data and standard will be used for saltwater locations, while E. coli (ECOLI) will be used for freshwater locations.
+Compliance rates for each sampling location and waterbody are based on the state water quality standards for boating and swimming. The E. coli (ECOLI) data and standards will be used to evaluate freshwater locations, and Enterococcus (ENT) will be used for saltwater locations. The following table lists the numeric criteria for each standard and parameter.
 
 ```{r tbl-bact-std, results="asis"}
 bact_std %>%
   rename("Location Type"=WaterType,
-         "Varaible"=CharacteristicID,
-         "Boating Standard"=BoatStd,
-         "Swimming Standard"=SwimStd) %>%
+         "Parameter"=CharacteristicID,
+         "Boating (#/100mL)"=BoatStd,
+         "Swimming (#/100mL)"=SwimStd) %>%
   kable()
 ```
 
-Using data from 2010-2014, MyRWA recommends the following grades for each waterbody. The grades are computed based on the mean compliance rates of all locations within each waterbody.
+MyRWA recommends the following grades for each waterbody in 2014. These grades are based on data collected over a 5-year period (2010-2014) by both MyRWA and the Massachusetts Water Resources Authority (MWRA). Multiple years of data are used to reduce uncertainty and increase stability in the year-to-year grade. The grade is directly related to the mean of the individual swimming and boating compliance rates. This mean compliance rate is shown as red points in the figure below. 
+
+For each waterbody, the compliance rate is computed as the mean of all locations within the waterbody. For each standard (swimming and boating), the compliance rate is based on a weighted average of dry and weather compliance using weights of 0.75 and 0.25, respectively. Individual samples are classified as wet or dry weather using a threshold of 0.25" over the previous 48 hours from when the sample was collected. Details of this methodology are described in the sections below.
 
 ```{r es-plot-wbody-grade, fig.width=10, fig.height=6}
 df_2014_std_grade_wbody %>%
@@ -358,8 +378,10 @@ df_2014_std_grade_wbody %>%
   facet_grid(.~WaterType, scales="free_x", space = "free_x") +
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
   labs(x="", y="% Compliance", 
-       title="Compliance and Grades for 2014 (Data from 2010-2014)")
+       title="Compliance Rates and Recommended Grades for 2014")
 ```
+
+The following table lists the grade and numeric values for each waterbody, and includes the individual compliance rates for the swimming and boating standards under dry and wet weather.
 
 ```{r es-table-wbody-grade, results="asis"}
 filter(df, Year %in% seq(2010, 2014)) %>%
@@ -410,11 +432,19 @@ filter(df, Year %in% seq(2010, 2014)) %>%
 
 # Dataset Summary
 
+The water quality data used in this analysis was extracted from the MyRWA Water Quality Database, which has been developed over the past few years. The database was designed to store water quality data collected for multiple sample programs managed by MyRWA as well as other agencies and organizations. The database contains important metadata such as field and lab methods as well as quality assurance information to ensure all data is properly characterized and used appropriately.
+
+The analysis is also facilitated by the [myrwaR](https://github.com/walkerjeffd/myrwaR) R package, which is currently under development. This package contains R functions for loading data from the MyRWA Database, merging percipitation and computing wet/dry conditions. Using this package improves reproducibility and transparency of MyRWA's data analyses and is becoming an integral part of the organization's capabilities for exploring, reporting and understanding datasets collected in the watershed.
+
 ## Precipitation Data
 
-Hourly precipitation was obtained for the Logan Airport weather station. Wet/dry weather categories are assigned based on a threshold of 48-hour antecedent precipitation > 0.25\".
+An hourly precipitation dataset was obtained for Logan Airport from the Northeast Regional Climate Center and the NOAA Climate Data Online warehouse. The precipitation dataset is continuous (i.e. no gaps) and spans from 1982 - 2014.
 
-This figure shows the fraction of hours for each weather category by year.
+The precipitation dataset can be downloaded here: [logan_hourly.csv](https://s3.amazonaws.com/myrwa/epa-grade-2014/logan_hourly.csv)
+
+Precipitation data is used to characterized each water quality sample as either dry or wet weather. This classification is based on a threshold of 48-hour antecedent precipitation > 0.25\".
+
+The following figure shows the fraction of hours for each weather category by year.
 
 ```{r plot-prcp-frac, fig.width=8, fig.height=4}
 mutate(prcp, Year=year(Datetime)) %>%
@@ -429,17 +459,14 @@ mutate(prcp, Year=year(Datetime)) %>%
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5))
 ```
 
-Overall, the annual mean fraction of Wet weather hours from 1982-2014 is about 25%:
-
-```{r table-mean-wet-fraction}
-mutate(prcp, Year=year(Datetime)) %>%
+Overall, the annual mean fraction of Wet weather hours from 1982-2014 was `r scales::percent((mutate(prcp, Year=year(Datetime)) %>%
   filter(Year > 1981, Year < 2015) %>%
   group_by(Year, Weather) %>%
   summarise(N=n()) %>%
   spread(Weather, N) %>%
   mutate(Fraction_Wet=Wet/(Dry+Wet)) %>%
-  summarise(Mean_Fraction_Wet=mean(Fraction_Wet))
-```
+  summarise(Mean_Fraction_Wet=mean(Fraction_Wet)))$Mean_Fraction_Wet)
+`.
 
 This figure shows the weather fractions for only the summer (May-Oct) of each year. Although there is more year-to-year variability than the plot above, the overall mean fraction is about the same indicating no major seasonal differences in the occurance of wet and dry weather. However, note that "Wet" conditions during winter months may contribute to snowpack, and thus not immediately generate runoff that could affect the instream bacteria concentrations. An improved classification might consider snowmelt during winter months for characterizing wet events.
 
@@ -457,16 +484,19 @@ mutate(prcp, Year=year(Datetime)) %>%
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5))
 ```
 
-
 ## Bacteria Data
 
-The bacteria dataset is comprised of three sampling programs from two organizations (MyRWA and MWRA):
+Bacteria data were extracted from the MyRWA Water Quality Database for three sampling programs from two organizations (MyRWA and MWRA):
 
 ```{r table-project, results="asis"}
 select(df, Agency, ProjectID) %>%
   unique %>%
   kable(format = 'markdown', row.names=FALSE)
 ```
+
+The raw dataset can be downloaded in csv format here: [db_bacteria.csv](https://s3.amazonaws.com/myrwa/epa-grade-2014/db_bacteria.csv)
+
+The corresponding locations table can be downloaded in csv format here: [db_locations.csv](https://s3.amazonaws.com/myrwa/epa-grade-2014/db_locations.csv)
 
 Two types of bacteria indicators were measured:
 
@@ -475,9 +505,11 @@ Two types of bacteria indicators were measured:
 
 The E. coli measurements are used to assess compliance in freshwater locations (above Amelia Earhart Dam), and the Enterococcus measurements are used for saltwater locations (below the dam).
 
+The dataset has been filtered to include only samples that passed all QAQC tests. As a result, `r nrow(df_flagged)` samples (for MyRWA Baseline data only) were excluded due to failing the lab RPD (Relative Percent Difference) test.
+
 ### Sampling Counts
 
-This figure shows the number of samples for each location (grouped by program) and year for 2002-2014 (note that some MWRA stations go back to 1989, but the MyRWA baseline program began in 2002). The freshwater MyRWA stations all span the period 2002-2014. Additional baseline stations were added in 2008-2009 in the saltwater portion of the watershed. The MWRA locations include more samples per year (approximately 1 sample every 1-2 weeks) than MyRWA locations that are sampled monthly.
+This figure shows the number of samples for each location (grouped by program) and year for 2002-2014 (note that some MWRA stations go back to 1989, but the MyRWA baseline program began in 2002). The freshwater MyRWA stations all span the period 2002-2014. Additional baseline stations were added in 2008-2009 in the saltwater portion of the watershed. The MWRA locations include more samples per year (approximately 1 sample every 1-2 weeks) than MyRWA locations that are sampled monthly. A number of samples from May 2010 - Dec 2011 are missing for the saltwater MyRWA stations due to methodological errors that were identified with the lab analysis.
 
 ```{r plot-tile-cnt-yr, fig.width=10, fig.height=8}
 df %>%
@@ -573,6 +605,19 @@ df %>%
 # Compliance Methodology
 
 The compliance of each location and waterbody is computed as a weighted mean of the compliances under dry and wet weather. This weighting scheme removes the year-to-year variability due to weather as well as the proportion of samples collected under each weather condition in a given year. As shown above, the long-term average fraction of the year under wet and dry conditions are 25% and 75%, respectively. Therefore, these fractions will be used to aggregate the compliances under dry/wet weather into an average compliance for a given year.
+
+The mean compliance for standard $s$ at location $l$ is computed by the following equation:
+
+$$Y_{l,s} = 0.25 Y_{l,s,dry}+0.75 Y_{l,s,wet}$$
+
+The mean compliance for standard $s$ in waterbody $w$ is computed as the mean of $n_w$ locations within the waterbody:
+
+$$Y_{w,s} = \frac{1}{n_w}\sum_{l \in w}{Y_{l,s}}$$
+
+Finally, the overall compliance rate for waterbody $w$ that is used to assign a grade is the mean of the boating and swimming compliance rates:
+
+$$Y_w = \frac{Y_{w,swim}+Y_{w,boat}}{2}$$
+
 
 ## Compliance By Location
 
@@ -928,52 +973,6 @@ df_std_grade_wbody_myrwa %>%
 ```
 
 
-## Basin-wide
-
-In previous years, USEPA pooled all available data to compute a single grade for the entire watershed. For comparison, the following figure shows the result of this approach using only MyRWA data with multiple rolling windows. The 1-Year window should yield the same compliance rates used for previous EPA grade assessments. Note that the grade, however, is different because the EPA grade is based on both a quantitative and qualitative assessment as described above with grade thresholds that probably differ from those used here.
-
-```{r plot-grade-basin, fig.width=6, fig.height=8}
-df_basin %>%
-  gather(Meets, ComplianceMeet, Swim, Boat) %>%
-  arrange(Meets) %>%
-  mutate(Label=paste(N_Year, "Years")) %>%
-  ggplot(aes(factor(GradeYear), ComplianceMeet)) +
-  geom_bar(aes(fill=Meets), stat="identity", color='grey50') +
-  geom_point(aes(y=Compliance), color='red') +
-  geom_text(aes(x = factor(GradeYear), label=Grade), y=1.07, size=3, 
-            data=select(df_basin, N_Year, GradeYear, Grade) %>% 
-              unique %>% 
-              mutate(Label=paste(N_Year, "Years"))) +
-  scale_y_continuous(labels=scales::percent, lim=c(0, 1.1),
-                     breaks=seq(0, 1, by=0.2)) +
-  scale_fill_meets +
-  facet_grid(Label~.) +
-  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
-  labs(x="", y="Weight Average % Compliance", 
-       title="Basin-wide Compliance from 2006-2014\nMyRWA Data Only")
-
-```
-
-This table lists the compliance rates for swimming and boating, as well as the average compliance rate and resulting grade for each year. The results in this table are based only one 1 Year of data (i.e. no rolling window).
-
-```{r table-basin-grade-5}
-filter(df_basin, N_Year==1) %>%
-  mutate(Boat=Boat+Swim,
-         Swim=scales::percent(Swim),
-         Boat=scales::percent(Boat),
-         Compliance=scales::percent(Compliance)) %>%
-  select(-N_Year) %>%
-  rename(Year=GradeYear,
-         "No. Samples"=N_Sample,
-         "Swim Compliance"=Swim,
-         "Boat Compliance"=Boat,
-         "Avg Compliance"=Compliance) %>%
-  kable(align='c')
-```
-
-It is important to note that MyRWA samples the freshwater and saltwater locations on different days. Therefore, the distribution of wet/dry sample days is not consistent between the two groups of locations. 
-
-
 # Conclusions
 
 The following conclusions are based on this analysis:
@@ -1012,6 +1011,7 @@ df_2014_std %>%
   ggplot(aes(BoatPtile, BoatFrac)) +
   geom_point()
 ```
+
 
 ```{r plot-corr-boat-swim, eval=FALSE}
 # Strong correlation between swim and boat compliances
@@ -1057,19 +1057,6 @@ df_2014_std %>%
 
 ```
 
-```{r plot-grade-dot, eval=FALSE}
-# grade dot plots
-df_roll %>%
-  filter(N_Year==5) %>%
-  spread(Meets, Compliance) %>%
-  mutate(Compliance=(Swim+Boat/2)) %>%
-  get_grade %>%
-  mutate(Grade=ordered(as.character(Grade), levels=rev(levels(Grade)))) %>%
-  # ggplot(aes(GradeYear, AVG)) +
-  ggplot(aes(GradeYear, Grade)) +
-  geom_point() +
-  facet_wrap(~LocationID)
-```
 
 ```{r plot-bact-2014-cnt-season, fig.width=8, fig.height=6, eval=FALSE}
 # This figure shows the number of sampling events in Summer (May-Oct) and Winter (Nov-Apr) at each location. Note that the MyRWA stations all have about 10-12 samples as expected due to the monthly sampling schedule. The MWRA locations vary and tend to have far more samples in summer than winter. This dataset includes both the `CSORWM` and `BHWQM` programs, which may have different sampling schedules.
@@ -1123,6 +1110,7 @@ filter(df, Year %in% seq(2003, 2014),
        title="Number of Samples at Selected MyRWA Stations from 2003-2014")
 
 ```
+
 
 ```{r plot-bact-2014-meets, fig.width=10, fig.height=6, eval=FALSE}
 # This figure shows the fraction of total samples that meet the swimming and boating standards (or don't meet either standard) under dry and wet weather conditions in 2014.
@@ -1258,6 +1246,7 @@ filter(df, Year == 2014) %>%
        title="Average % Compliance in 2014 by Water Body")
 ```
 
+
 ```{r alt-grade-system, eval=FALSE}
 # This grading method uses the compliance for swimming as the primary letter part of the grade (A, B, ...), and the relatively compliance for boating as the minor part of the grade (+/ /-).
 
@@ -1324,3 +1313,51 @@ grades_swim %>%
   select(Grade=grade, `Swim Compliance`=swim_text, `Boat Compliance`=boat_text) %>%
   kable(., format="markdown", align = 'c')
 ```
+
+
+```{r plot-grade-basin, fig.width=6, fig.height=8, eval=FALSE}
+## Basin-wide
+
+# In previous years, USEPA pooled all available data to compute a single grade for the entire watershed. For comparison, the following figure shows the result of this approach using only MyRWA data with multiple rolling windows. The 1-Year window should yield the same compliance rates used for previous EPA grade assessments. Note that the grade, however, is different because the EPA grade is based on both a quantitative and qualitative assessment as described above with grade thresholds that probably differ from those used here.
+
+
+df_basin %>%
+  gather(Meets, ComplianceMeet, Swim, Boat) %>%
+  arrange(Meets) %>%
+  mutate(Label=paste(N_Year, "Years")) %>%
+  ggplot(aes(factor(GradeYear), ComplianceMeet)) +
+  geom_bar(aes(fill=Meets), stat="identity", color='grey50') +
+  geom_point(aes(y=Compliance), color='red') +
+  geom_text(aes(x = factor(GradeYear), label=Grade), y=1.07, size=3, 
+            data=select(df_basin, N_Year, GradeYear, Grade) %>% 
+              unique %>% 
+              mutate(Label=paste(N_Year, "Years"))) +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1.1),
+                     breaks=seq(0, 1, by=0.2)) +
+  scale_fill_meets +
+  facet_grid(Label~.) +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x="", y="Weight Average % Compliance", 
+       title="Basin-wide Compliance from 2006-2014\nMyRWA Data Only")
+
+```
+
+```{r table-basin-grade-5, eval=FALSE}
+# This table lists the compliance rates for swimming and boating, as well as the average compliance rate and resulting grade for each year. The results in this table are based only one 1 Year of data (i.e. no rolling window).
+
+# It is important to note that MyRWA samples the freshwater and saltwater locations on different days. Therefore, the distribution of wet/dry sample days is not consistent between the two groups of locations. 
+
+filter(df_basin, N_Year==1) %>%
+  mutate(Boat=Boat+Swim,
+         Swim=scales::percent(Swim),
+         Boat=scales::percent(Boat),
+         Compliance=scales::percent(Compliance)) %>%
+  select(-N_Year) %>%
+  rename(Year=GradeYear,
+         "No. Samples"=N_Sample,
+         "Swim Compliance"=Swim,
+         "Boat Compliance"=Boat,
+         "Avg Compliance"=Compliance) %>%
+  kable(align='c')
+```
+
