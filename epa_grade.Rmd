@@ -1,7 +1,7 @@
 ---
 title: 'MyRWA: EPA Grade'
-author: "Jeffrey D Walker, PhD"
-date: "June 23, 2015"
+author: "Jeffrey D Walker, PhD; Andy Hrycyna; Patrick Herron, PhD; Nathan Sanders; Veronique Vicard"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output: 
   html_document: 
     number_sections: yes
@@ -53,9 +53,7 @@ bact_std %>%
 Hourly precipitation was obtained for the Logan Airport weather station. Wet/dry weather categories are assigned based on a threshold of 48-hour antecedent precipitation > 0.25\".
 
 ```{r load-precip}
-# prcp <- read_csv(file = "~/Dropbox/Work/mystic/_share_db/Processed/Precip/logan-hourly/20150605/logan_hourly.csv",
-#                  col_types=list(col_character(), col_double())) %>%
-prcp <- read.csv(file = "~/Dropbox/Work/mystic/_share_db/Processed/Precip/logan-hourly/20150605/logan_hourly.csv", stringsAsFactors=FALSE) %>%
+prcp <- read.csv(file = "csv/logan_hourly.csv", stringsAsFactors=FALSE) %>%
   mutate(datetime=ymd_hms(datetime, tz="EST")) %>%
   rename(Datetime=datetime, Precip=prcp_in) %>%
   as.data.frame
@@ -111,7 +109,7 @@ mutate(prcp, Year=year(Datetime)) %>%
 # Bacteria Data
 
 ```{r load data}
-load('bact.Rdata')
+load('rdata/bact.Rdata')
 
 # surface samples only
 df <- mutate(df, 
@@ -162,7 +160,7 @@ df <- df[-which(df$LocationID=="MWRA052" & as.Date(df$Datetime)==as.Date("1991-0
 # df <- filter(df, Year>=2002, Year<=2014)
 
 # save locations to csv for gis plotting
-# write_csv(loc, path="locations.csv")
+# write_csv(loc, path="csv/locations.csv")
 ```
 
 ```{r data-checks}
@@ -844,10 +842,10 @@ select(df, ID, Agency, ProjectID, WaterType, WaterBodyID, LocationID,
        CharacteristicID, Datetime, ResultValue, Units, Qualifier, 
        FlagID, Precip48, Weather, MeetStd=Meets) %>%
   arrange(Agency, LocationID, Datetime) %>%
-  write.csv(file="bacteria_dataset.csv", row.names=FALSE)
+  write.csv(file="csv/bacteria_dataset.csv", row.names=FALSE)
 filter(loc, LocationID %in% unique(df$LocationID)) %>%
   select(-Location_Waterbody) %>%
-  write.csv(file="sample_locations.csv", row.names=FALSE)
+  write.csv(file="csv/sample_locations.csv", row.names=FALSE)
 ```
 
 
