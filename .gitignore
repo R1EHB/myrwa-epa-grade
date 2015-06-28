@@ -5,3 +5,4 @@ rdata/
 *.html
 
 csv/
+.Rproj.user
