@@ -1608,7 +1608,56 @@ df_wbody_nocso <- df_loc_nocso %>%
     x
   })
 
+df_wbody_nocso_grade <- filter(df_wbody_nocso) %>%
+  filter(!is.na(Grade)) %>%
+  mutate(Programs="BASE, BHWQM")
+df_wbody_grade <- filter(df_wbody) %>%
+  filter(!is.na(Grade)) %>%
+  mutate(Programs="BASE, BHWQM, CSORWM")
+df_grade_program <- rbind(df_wbody_nocso_grade, df_wbody_grade)
+
+pdf('pdf/exclude-csorwm.pdf', width=11, height=8.5)
+
+df_grade_program %>%
+  filter(N_Year %in% c(3)) %>%
+  mutate(WaterBodyID=as.character(WaterBodyID)) %>%
+  arrange(WaterType, WaterBodyID, N_Year, GradeYear) %>%
+  mutate(WaterBodyID=ordered(as.character(WaterBodyID), levels=unique(WaterBodyID))) %>%
+  mutate(Grade=ordered(as.character(Grade), levels=rev(levels(Grade)))) %>%
+  ggplot(aes(GradeYear, Grade, group=interaction(WaterBodyID, Programs), color=Programs)) +
+  geom_point() +
+  geom_line() +
+  scale_color_manual(values=c('orangered', 'deepskyblue')) +
+  facet_wrap(~WaterBodyID) +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5),
+        axis.text.y=element_text(size=6),
+        legend.position='top') +
+  labs(x="", y="Grade", 
+       title=paste0("Historical Grades by Waterbody from 2006-2014 (3-yr Window)\nWith and Without CSORWM"))
+
+df_grade_program %>%
+  filter(N_Year %in% c(3)) %>%
+  mutate(Grade=ordered(as.character(Grade), levels=rev(levels(Grade))),
+         WaterBodyID=as.character(WaterBodyID)) %>%
+  arrange(WaterType, WaterBodyID, N_Year, GradeYear) %>%
+  mutate(WaterBodyID=ordered(as.character(WaterBodyID), levels=unique(WaterBodyID))) %>%
+  select(Programs, WaterBodyID, GradeYear, N_Waterbody) %>%
+  spread(Programs, N_Waterbody, fill=0) %>%
+  gather(Programs, N_Waterbody, -WaterBodyID, -GradeYear) %>%
+  ggplot(aes(factor(GradeYear), N_Waterbody, fill=Programs)) +
+  geom_bar(position='dodge', stat='identity') +
+  scale_fill_manual(values=c('orangered', 'deepskyblue')) +
+  facet_wrap(~WaterBodyID) +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5),
+        axis.text.y=element_text(size=6),
+        legend.position='top') +
+  labs(x="", y="# Samples", 
+       title=paste0("Number of Samples by Waterbody from 2006-2014 (3-yr Window)\nWith and Without CSORWM"))
+
+
 filter(df_wbody_nocso, N_Year %in% c(3)) %>%
+  arrange(WaterType, WaterBodyID, N_Year, GradeYear) %>%
+  mutate(WaterBodyID=ordered(as.character(WaterBodyID), levels=unique(WaterBodyID))) %>%
   mutate(Boat=Boat-Swim,
          Label=paste(N_Year, "Years")) %>%
   gather(Meets, ComplianceMeet, Swim, Boat) %>%
@@ -1624,50 +1673,29 @@ filter(df_wbody_nocso, N_Year %in% c(3)) %>%
   facet_wrap(~WaterBodyID) +
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
   labs(x="", y="% Compliance", 
-       title=paste0("Historical Compliance Rates and Grades from 2006-2014 with 1-3 Year Windows\nFreshwater Waterbodies, Programs: BASE + BHWQM"))
+       title=paste0("Historical Compliance Rates and Grades from 2006-2014 with 1-3 Year Windows\nPrograms: BASE + BHWQM"))
 
-df_wbody_nocso_grade <- filter(df_wbody_nocso) %>%
-  filter(!is.na(Grade)) %>%
-  mutate(Programs="BASE, BHWQM")
-df_wbody_grade <- filter(df_wbody) %>%
-  filter(!is.na(Grade)) %>%
-  mutate(Programs="BASE, BHWQM, CSORWM")
-df_grade_program <- rbind(df_wbody_nocso_grade, df_wbody_grade)
 
-df_grade_program %>%
-  filter(N_Year %in% c(3)) %>%
-  mutate(Grade=ordered(as.character(Grade), levels=rev(levels(Grade)))) %>%
+filter(df_wbody, N_Year %in% c(3)) %>%
   arrange(WaterType, WaterBodyID, N_Year, GradeYear) %>%
   mutate(WaterBodyID=ordered(as.character(WaterBodyID), levels=unique(WaterBodyID))) %>%
-  ggplot(aes(GradeYear, Grade, group=interaction(WaterBodyID, Programs), color=Programs)) +
-  geom_point() +
-  geom_line() +
-  scale_color_manual(values=c('orangered', 'deepskyblue')) +
+  mutate(Boat=Boat-Swim,
+         Label=paste(N_Year, "Years")) %>%
+  gather(Meets, ComplianceMeet, Swim, Boat) %>%
+  ggplot(aes(factor(GradeYear), ComplianceMeet)) +
+  geom_bar(aes(fill=Meets), stat="identity", color='grey50') +
+  geom_point(aes(y=Compliance), color='red') +
+  geom_text(aes(x = factor(GradeYear), label=Grade), y=1.07, size=3, 
+            data=filter(df_wbody, N_Year %in% c(3)) %>%
+              mutate(Label=paste(N_Year, "Years"))) +
+  scale_y_continuous(labels=scales::percent, lim=c(0, 1.1),
+                     breaks=seq(0, 1, by=0.2)) +
+  scale_fill_meets +
   facet_wrap(~WaterBodyID) +
-  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5),
-        axis.text.y=element_text(size=6),
-        legend.position='top') +
-  labs(x="", y="Grade", 
-       title=paste0("Historical Grades by Waterbody from 2006-2014 (3-yr Window)\nWith and Without CSORWM"))
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  labs(x="", y="% Compliance", 
+       title=paste0("Historical Compliance Rates and Grades from 2006-2014 with 1-3 Year Windows\nPrograms: BASE + BHWQM + CSORWM"))
 
-df_grade_program %>%
-  filter(N_Year %in% c(3)) %>%
-  mutate(Grade=ordered(as.character(Grade), levels=rev(levels(Grade)))) %>%
-  arrange(WaterType, WaterBodyID, N_Year, GradeYear) %>%
-  mutate(WaterBodyID=ordered(as.character(WaterBodyID), levels=unique(WaterBodyID))) %>%
-  select(Programs, WaterBodyID, GradeYear, N_Waterbody) %>%
-  spread(Programs, N_Waterbody, fill=0) %>%
-  gather(Programs, N_Waterbody, -WaterBodyID, -GradeYear) %>%
-  ggplot(aes(GradeYear, N_Waterbody, fill=Programs)) +
-  geom_bar(position='dodge', stat='identity') +
-  scale_fill_manual(values=c('orangered', 'deepskyblue')) +
-  facet_wrap(~WaterBodyID) +
-  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5),
-        axis.text.y=element_text(size=6),
-        legend.position='top') +
-  labs(x="", y="# Samples", 
-       title=paste0("Number of Samples by Waterbody from 2006-2014 (3-yr Window)\nWith and Without CSORWM"))
-
-
+dev.off()
 ```
 
