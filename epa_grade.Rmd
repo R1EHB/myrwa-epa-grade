@@ -1083,6 +1083,8 @@ The following conclusions were reached from this analysis:
 - A 3-year rolling window was identified as resulting in a good balance between year-to-year stability and reflecting short-term changes. A more robust statistical analysis to identify the sample size required to achieve a target level of uncertainty is recommended.
 - In comparison to the historical compliance rates and grades reported by USEPA for the Charles River, the revised grading system for the Mystic River would yield comparable results when comparing only the freshwater mainstem portion of the Mystic.
 
+The source code for this analysis is available on Github: <https://github.com/walkerjeffd/myrwa-epa-grade>
+
 ```{r export}
 select(df, ID, Agency, ProjectID, WaterType, WaterBodyID, LocationID, 
        CharacteristicID, Datetime, ResultValue, Units, Qualifier, 
