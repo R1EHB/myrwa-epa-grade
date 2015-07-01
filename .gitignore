@@ -1,8 +1,11 @@
-pdf/
-rdata/
 .Rhistory
+.Rproj.user
+rdata/
 
 *.html
 
 csv/
-.Rproj.user
+*.csv
+
+pdf/
+
