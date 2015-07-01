@@ -6,6 +6,7 @@ rdata/
 
 csv/
 *.csv
+!charles_grades.csv
 
 pdf/
 
