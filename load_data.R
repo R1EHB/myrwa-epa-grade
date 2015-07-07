@@ -1,6 +1,6 @@
 library(dplyr)
 library(myrwaR)
-ch <- db_connect('H:/Dropbox/Work/mystic/db/MysticDB_20150603.accdb')
+ch <- db_connect('H:/Dropbox/Work/mystic/db/MysticDB_20150707.accdb')
 
 df <- db_results(ch)
 df <- filter(df, SampleTypeID=="S",
