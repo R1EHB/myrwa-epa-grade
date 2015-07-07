@@ -11,7 +11,7 @@ df <- filter(df, SampleTypeID=="S",
 loc <- db_table(ch, "Location")
 loc <- filter(loc, ID %in% unique(df$LocationID))
 
-write.csv(df, file="db_data.csv", row.names=FALSE)
+write.csv(df, file="db_bacteria.csv", row.names=FALSE)
 write.csv(loc, file="db_locations.csv", row.names=FALSE)
 
 close(ch)
