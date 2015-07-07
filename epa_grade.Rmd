@@ -1537,7 +1537,7 @@ grid.arrange(p1, p2, nrow=2)
 dev.off()
 ```
 
-```{r}
+```{r nocso, eval=FALSE}
 df_loc_nocso <- lapply(seq(1, 5), function(n) {
   x <- grade_years(n=n, start=2006, end=2014) %>%
     left_join(filter(df, ProjectID %in% c("BASE", "BHWQM")), by="Year") %>%
