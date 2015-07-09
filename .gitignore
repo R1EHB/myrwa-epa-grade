@@ -1,12 +1,9 @@
 .Rhistory
 .Rproj.user
 rdata/
-
 *.html
-
 csv/
 *.csv
 !charles_grades.csv
-
 pdf/
-
+rsconnect/
