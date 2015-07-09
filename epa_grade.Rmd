@@ -271,21 +271,28 @@ filter(df_wbody, N_Year==n_year, GradeYear==2014) %>%
                              levels=unique(WaterBodyID)),
          Boat=Boat-Swim) %>%
   gather(Meets, ComplianceMeet, Swim, Boat) %>%
-  arrange(WaterType, WaterBodyID, Meets) %>%
-  ggplot(aes(WaterBodyID, ComplianceMeet)) +
-  geom_bar(aes(fill=Meets), stat="identity", color='grey50') +
-  geom_point(aes(y=Compliance), color='red') +
-  geom_text(aes(x = WaterBodyID, label=Grade), y=1.05, size=4, 
+  mutate(Meets=ordered(as.character(Meets), levels=c('Boat', 'Swim'))) %>%
+  arrange(WaterType, WaterBodyID, rev(Meets)) %>%
+  ggplot() +
+  geom_bar(aes(x=WaterBodyID, y=ComplianceMeet, fill=Meets), stat="identity", color='grey50') +
+  geom_point(aes(x=WaterBodyID, y=Compliance, color='Average\nCompliance\nRate'), show_guide=TRUE,
+             data=filter(df_wbody, N_Year==n_year, GradeYear==2014) %>%
+              select(WaterType, WaterBodyID, Compliance) %>% 
+              unique) +
+  geom_text(aes(x=WaterBodyID, label=Grade), y=1.05, size=4, 
             data=filter(df_wbody, N_Year==n_year, GradeYear==2014) %>%
               select(WaterType, WaterBodyID, Grade) %>% 
               unique) +
   scale_y_continuous(labels=scales::percent, lim=c(0, 1.07),
                      breaks=seq(0, 1, by=0.1)) +
+  scale_color_manual('', values='red') +
   scale_fill_meets +
+  guides(fill = guide_legend(override.aes=list(shape=NA, colour=NULL), order=1), 
+         color = guide_legend('', override.aes = list(fill = NA)), order=2) +
   facet_grid(.~WaterType, scales="free_x", space = "free_x") +
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
   labs(x="", y="% Compliance", 
-       title="Compliance Rates and Recommended Grades for 2014")
+       title="Compliance Rates and Grades for 2014")
 ```
 
 The following table lists the grade and numeric values for each waterbody, and includes the individual compliance rates for the swimming and boating standards under dry and wet weather.
@@ -544,6 +551,8 @@ filter(df_loc, N_Year==1, GradeYear==2014) %>%
   gather(MeetsWeather, Compliance, Swim_Wet:Boat_Dry) %>%
   mutate(MeetsWeather=as.character(MeetsWeather)) %>%
   separate(MeetsWeather, c("Meets", "Weather"))  %>%
+  mutate(Meets=ordered(as.character(Meets), levels=c('Boat', 'Swim'))) %>%
+  arrange(Location_Waterbody, rev(Meets)) %>%
   ggplot(aes(Location_Waterbody, Compliance, fill=Meets, color=Agency)) +
   geom_bar(stat="identity", position="stack") +
   scale_fill_meets +
@@ -551,6 +560,7 @@ filter(df_loc, N_Year==1, GradeYear==2014) %>%
   scale_y_continuous(labels=scales::percent) +
   facet_grid(Weather~WaterType, scales='free_x', space="free_x") +
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  guides(color=guide_legend(override.aes = list(fill=NA))) +
   labs(x="", y="Compliance Fraction", 
        title="Fraction of Samples Meeting Standards for 2014 by Weather and Location")
 ```
@@ -562,6 +572,8 @@ filter(df_loc, N_Year==1, GradeYear==2014) %>%
   select(Agency, WaterType, Location_Waterbody, Swim, Boat) %>%
   mutate(Boat=Boat-Swim) %>%
   gather(Meets, Compliance, Swim:Boat) %>%
+  mutate(Meets=ordered(as.character(Meets), levels=c('Boat', 'Swim'))) %>%
+  arrange(Location_Waterbody, rev(Meets)) %>%
   ggplot(aes(Location_Waterbody, Compliance, fill=Meets, color=Agency)) +
   geom_bar(stat="identity") +
   scale_y_continuous(labels=scales::percent, lim=c(0, 1),
@@ -570,6 +582,7 @@ filter(df_loc, N_Year==1, GradeYear==2014) %>%
   scale_fill_meets +
   facet_grid(.~WaterType, scales="free_x", space = "free_x") +
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  guides(color=guide_legend(override.aes = list(fill=NA))) +
   labs(x="", y="Weight Average % Compliance", 
        title="Weighted Average % Compliance for 2014")
 ```
@@ -586,12 +599,15 @@ filter(df_wbody, N_Year==1, GradeYear==2014) %>%
   select(WaterType, WaterBodyID, Swim, Boat) %>%
   mutate(Boat=Boat-Swim) %>%
   gather(Meets, Compliance, Swim:Boat) %>%
+  mutate(Meets=ordered(as.character(Meets), levels=c('Boat', 'Swim'))) %>%
+  arrange(WaterBodyID, rev(Meets)) %>%
   ggplot(aes(WaterBodyID, Compliance, fill=Meets)) +
   geom_bar(stat="identity", color='grey50') +
   scale_y_continuous(labels=scales::percent, lim=c(0, 1),
                      breaks=seq(0, 1, by=0.2)) +
   scale_fill_meets +
   facet_grid(.~WaterType, scales="free_x", space = "free_x") +
+  guides(fill=guide_legend(override.aes = list(colour=NULL))) +
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
   labs(x="", y="Weight Average % Compliance", 
        title="Weighted Average % Compliance for 2014 by Water Body\nLocations Equally Weighted")
@@ -622,12 +638,15 @@ df_wbody_eql %>%
   filter(N_Year==1, GradeYear==2014) %>%
   mutate(Boat=Boat-Swim) %>%
   gather(Meets, Compliance, Swim, Boat) %>%
+  mutate(Meets=ordered(as.character(Meets), levels=c('Boat', 'Swim'))) %>%
+  arrange(WaterBodyID, rev(Meets)) %>%
   ggplot(aes(WaterBodyID, Compliance, fill=Meets)) +
   geom_bar(stat="identity", color='grey50') +
   scale_y_continuous(labels=scales::percent, lim=c(0, 1),
                      breaks=seq(0, 1, by=0.2)) +
   scale_fill_meets +
   facet_grid(.~WaterType, scales="free_x", space = "free_x") +
+  guides(fill=guide_legend(override.aes = list(colour=NULL))) +
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
   labs(x="", y="Weight Average % Compliance", 
        title="Weighted Average % Compliance for 2014 by Water Body\nLocations Weighted by Sample Number")
@@ -686,6 +705,8 @@ df_loc %>%
   select(Label, WaterType, GradeYear, LocationID, Swim, Boat) %>%
   mutate(Boat=Boat-Swim) %>%
   gather(Meets, Compliance, Swim:Boat) %>%
+  mutate(Meets=ordered(as.character(Meets), levels=c('Boat', 'Swim'))) %>%
+  arrange(LocationID, rev(Meets)) %>%
   ggplot(aes(factor(GradeYear), Compliance, fill=Meets)) +
   geom_bar(stat="identity") +
   scale_y_continuous(labels=scales::percent, lim=c(0, 1),
@@ -693,6 +714,7 @@ df_loc %>%
   scale_color_manual(values=c("MyRWA"="red", "MWRA"="grey50")) +
   scale_fill_meets +
   facet_grid(Label~LocationID) +
+  guides(fill=guide_legend(override.aes = list(colour=NULL))) +
   labs(x="", y="Weight Average % Compliance", 
        title="Average % Compliance with Varying Rolling Windows") +
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5, size=6),
@@ -726,6 +748,8 @@ df_loc %>%
   select(Label, WaterType, GradeYear, LocationID, Swim, Boat) %>%
   mutate(Boat=Boat-Swim) %>%
   gather(Meets, Compliance, Swim:Boat) %>%
+  mutate(Meets=ordered(as.character(Meets), levels=c('Boat', 'Swim'))) %>%
+  arrange(LocationID, rev(Meets)) %>%
   ggplot(aes(factor(GradeYear), Compliance, fill=Meets)) +
   geom_bar(stat="identity") +
   scale_y_continuous(labels=scales::percent, lim=c(0, 1),
@@ -733,6 +757,7 @@ df_loc %>%
   scale_color_manual(values=c("MyRWA"="red", "MWRA"="grey50")) +
   scale_fill_meets +
   facet_grid(Label~LocationID) +
+  guides(fill=guide_legend(override.aes = list(colour=NULL))) +
   labs(x="", y="Weight Average % Compliance", 
        title="Average % Compliance with Varying Rolling Windows") +
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5, size=6),
@@ -822,9 +847,14 @@ df_loc_2014 <- filter(df_loc, N_Year==n_year, GradeYear==2014) %>%
 df_loc_2014 %>% 
   select(Agency, WaterType, Location_Waterbody, Swim, Boat) %>%
   gather(Meets, Compliance, Swim, Boat) %>%
+  mutate(Meets=ordered(as.character(Meets), levels=c('Boat', 'Swim'))) %>%
+  arrange(Location_Waterbody, rev(Meets)) %>%
   ggplot(aes(Location_Waterbody, Compliance)) +
   geom_bar(aes(fill=Meets, color=Agency), stat="identity") +
-  geom_point(aes(y=Compliance), data=select(df_loc_2014, Agency, WaterType, Location_Waterbody, Compliance) %>% unique, color='red') +
+  geom_point(aes(x=Location_Waterbody, y=Compliance),
+             data=select(df_loc_2014, WaterType, Location_Waterbody, Compliance) %>% 
+              unique,
+             color='red') +
   geom_text(aes(x = Location_Waterbody, label=Grade), y=1.05, size=4, 
             data=select(df_loc_2014, Agency, WaterType, Location_Waterbody, Grade) %>% unique) +
   scale_y_continuous(labels=scales::percent, lim=c(0, 1.07),
@@ -833,6 +863,8 @@ df_loc_2014 %>%
   scale_fill_meets +
   facet_grid(.~WaterType, scales="free_x", space = "free_x") +
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  guides(fill = guide_legend(override.aes=list(shape=NA, colour=NULL), order=1), 
+         color = guide_legend('', override.aes = list(fill = NA)), order=2) +
   labs(x="", y="% Compliance", 
        title=paste0("Compliance Rates and Grade by Location for Assessment Year 2014 (Data from ", 2014-n_year+1, "-2014)"))
 
@@ -852,16 +884,23 @@ df_wbody_2014 <- filter(df_wbody, GradeYear==2014, N_Year==n_year) %>%
 
 df_wbody_2014 %>%
   gather(Meets, ComplianceMeet, Swim, Boat) %>%
+  mutate(Meets=ordered(as.character(Meets), levels=c('Boat', 'Swim'))) %>%
+  arrange(WaterBodyID, rev(Meets)) %>%
   ggplot(aes(WaterBodyID, ComplianceMeet)) +
   geom_bar(aes(fill=Meets), stat="identity", color='grey50') +
-  geom_point(aes(y=Compliance), data=select(df_wbody_2014, WaterType, WaterBodyID, Compliance) %>% unique, color='red') +
+  geom_point(aes(x=WaterBodyID, y=Compliance, color='Average\nCompliance\nRate'), show_guide=TRUE,
+             data=select(df_wbody_2014, WaterType, WaterBodyID, Compliance) %>% 
+              unique) +
   geom_text(aes(x = WaterBodyID, label=Grade), y=1.05, size=4, 
             data=select(df_wbody_2014, WaterType, WaterBodyID, Grade) %>% unique) +
   scale_y_continuous(labels=scales::percent, lim=c(0, 1.07),
                      breaks=seq(0, 1, by=0.1)) +
   scale_fill_meets +
+  scale_color_manual('', values=c('red')) +
   facet_grid(.~WaterType, scales="free_x", space = "free_x") +
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
+  guides(fill = guide_legend(override.aes=list(shape=NA, colour=NULL), order=1), 
+         color = guide_legend('', override.aes = list(fill = NA)), order=2) +
   labs(x="", y="% Compliance", 
        title=paste0("Compliance Rates and Grade by Waterbody for Assessment Year 2014 (Data from ", 2014-n_year+1, "-2014)"))
 
@@ -927,15 +966,22 @@ df_wbody_myrwa_2014 <- filter(df_wbody_myrwa, GradeYear==2014, N_Year==n_year) %
 
 df_wbody_myrwa_2014 %>%
   gather(Meets, ComplianceMeet, Swim, Boat) %>%
+  mutate(Meets=ordered(as.character(Meets), levels=c('Boat', 'Swim'))) %>%
+  arrange(WaterBodyID, rev(Meets)) %>%
   ggplot(aes(WaterBodyID, ComplianceMeet)) +
   geom_bar(aes(fill=Meets), stat="identity", color='grey50') +
-  geom_point(aes(y=Compliance), data=select(df_wbody_myrwa_2014, WaterType, WaterBodyID, Compliance) %>% unique, color='red') +
+  geom_point(aes(x=WaterBodyID, y=Compliance, color='Average\nCompliance\nRate'), show_guide=TRUE,
+             data=select(df_wbody_myrwa_2014, WaterType, WaterBodyID, Compliance) %>% 
+              unique) +
   geom_text(aes(x = WaterBodyID, label=Grade), y=1.05, size=4, 
             data=select(df_wbody_myrwa_2014, WaterType, WaterBodyID, Grade) %>% unique) +
   scale_y_continuous(labels=scales::percent, lim=c(0, 1.07),
                      breaks=seq(0, 1, by=0.1)) +
   scale_fill_meets +
+  scale_color_manual('', values=c('red')) +
   facet_grid(.~WaterType, scales="free_x", space = "free_x") +
+  guides(fill = guide_legend(override.aes=list(shape=NA, colour=NULL), order=1), 
+         color = guide_legend('', override.aes = list(fill = NA)), order=2) +
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
   labs(x="", y="% Compliance", 
        title=paste0("Weighted Average % Compliance for Grade Year 2014 (Data from ", 2014-n_year+1, "-2014)\nMyRWA Data Only"))
@@ -978,16 +1024,22 @@ This figure shows the compliance rates and grades for each freshwater waterbody 
 
 ```{r plot-grade-hist-fresh, fig.width=10, fig.height=8}
 filter(df_wbody_hist, WaterType=="Fresh") %>%
+  mutate(Meets=ordered(as.character(Meets), levels=c('Boat', 'Swim'))) %>%
+  arrange(WaterBodyID, rev(Meets)) %>%
   ggplot(aes(factor(GradeYear), ComplianceMeet)) +
   geom_bar(aes(fill=Meets), stat="identity", color='grey50') +
-  geom_point(aes(y=Compliance), color='red') +
+  geom_point(aes(y=Compliance, color='Average\nCompliance\nRate'),
+             show_guide=TRUE) +
   geom_text(aes(x = factor(GradeYear), label=Grade), y=1.07, size=3, 
             data=filter(df_wbody_hist, WaterType=="Fresh") %>%
               select(WaterType, WaterBodyID, GradeYear, Grade) %>% unique) +
   scale_y_continuous(labels=scales::percent, lim=c(0, 1.1),
                      breaks=seq(0, 1, by=0.2)) +
   scale_fill_meets +
+  scale_color_manual('', values=c('red')) +
   facet_wrap(~WaterBodyID) +
+  guides(fill = guide_legend(override.aes=list(shape=NA, colour=NULL), order=1), 
+         color = guide_legend('', override.aes = list(fill = NA)), order=2) +
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
   labs(x="", y="% Compliance", 
        title=paste0("Historical Compliance Rates and Grades by Waterbody from 2006-2014 (", n_year," Year Rolling Window)\nFreshwater Waterbodies"))
@@ -998,16 +1050,22 @@ This figure shows the historical compliance rates and grades for saltwater water
 
 ```{r plot-grade-hist-salt, fig.width=10, fig.height=6}
 filter(df_wbody_hist, WaterType=="Saline") %>%
+  mutate(Meets=ordered(as.character(Meets), levels=c('Boat', 'Swim'))) %>%
+  arrange(WaterBodyID, rev(Meets)) %>%
   ggplot(aes(factor(GradeYear), ComplianceMeet)) +
   geom_bar(aes(fill=Meets), stat="identity", color='grey50') +
-  geom_point(aes(y=Compliance), color='red') +
+  geom_point(aes(y=Compliance, color='Average\nCompliance\nRate'),
+             show_guide=TRUE) +
   geom_text(aes(x = factor(GradeYear), label=Grade), y=1.07, size=3, 
             data=filter(df_wbody_hist, WaterType=="Saline") %>%
               select(WaterType, WaterBodyID, GradeYear, Grade) %>% unique) +
   scale_y_continuous(labels=scales::percent, lim=c(0, 1.1),
                      breaks=seq(0, 1, by=0.2)) +
   scale_fill_meets +
+  scale_color_manual('', values=c('red')) +
   facet_wrap(~WaterBodyID) +
+  guides(fill = guide_legend(override.aes=list(shape=NA, colour=NULL), order=1), 
+         color = guide_legend('', override.aes = list(fill = NA)), order=2) +
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
   labs(x="", y="% Compliance", 
        title=paste0("Historical Compliance Rates and Grades by Waterbody from 2006-2014 (", n_year," Year Rolling Window)\nSaltwater Waterbodies"))
@@ -1037,16 +1095,21 @@ compare <- rbind(select(charles, WaterBodyID, GradeYear, Grade, Compliance, Boat
 
 mutate(compare, Boat=Boat-Swim) %>%
   gather(Meets, ComplianceMeet, Boat, Swim) %>%
-  arrange(desc(Meets)) %>%
+  mutate(Meets=ordered(as.character(Meets), levels=c('Boat', 'Swim'))) %>%
+  arrange(WaterBodyID, desc(Meets)) %>%
   ggplot(aes(factor(GradeYear), ComplianceMeet)) +
   geom_bar(aes(fill=Meets), stat="identity", color='grey50') +
-  geom_point(aes(y=Compliance), color='red') +
+  geom_point(aes(y=Compliance, color='Average\nCompliance\nRate'),
+             show_guide=TRUE) +
   geom_text(aes(x = factor(GradeYear), label=Grade), y=1.07, size=3, 
             data=select(compare, WaterBodyID, GradeYear, Grade) %>% unique) +
   scale_y_continuous(labels=scales::percent, lim=c(0, 1.1),
                      breaks=seq(0, 1, by=0.2)) +
   scale_fill_meets +
+  scale_color_manual('', values='red') +
   facet_wrap(~WaterBodyID) +
+  guides(fill = guide_legend(override.aes=list(shape=NA, colour=NULL), order=1), 
+         color = guide_legend('', override.aes = list(fill = NA)), order=2) +
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
   labs(x="", y="% Compliance", 
        title=paste0("Comparison of Historical Compliance Rates and Grades for the\nCharles River and Mystic River (Fresh)"))
