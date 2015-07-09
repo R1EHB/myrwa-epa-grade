@@ -264,7 +264,7 @@ MyRWA recommends the following grades for each waterbody in 2014. These grades a
 For each waterbody, the compliance rate is computed as the mean of all locations within the waterbody. For each standard (swimming and boating), the compliance rate is based on a weighted average of dry and wet weather compliance using weights of 0.75 and 0.25, respectively. Individual samples are classified as wet or dry weather using a threshold precepitation amount of 0.25" over the previous 48 hours from when the sample was collected.  Details of this methodology are described in the sections below.
 
 ```{r es-plot-wbody-grade, fig.width=10, fig.height=6}
-filter(df_wbody, N_Year==n_year, GradeYear==2014) %>%
+p.2014 <- filter(df_wbody, N_Year==n_year, GradeYear==2014) %>%
   select(WaterType, WaterBodyID, Grade, Compliance, Swim, Boat) %>%
   arrange(WaterType, Grade, desc(Compliance)) %>%
   mutate(WaterBodyID=ordered(as.character(WaterBodyID), 
@@ -293,6 +293,7 @@ filter(df_wbody, N_Year==n_year, GradeYear==2014) %>%
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
   labs(x="", y="% Compliance", 
        title="Compliance Rates and Grades for 2014")
+p.2014
 ```
 
 The following table lists the grade and numeric values for each waterbody, and includes the individual compliance rates for the swimming and boating standards under dry and wet weather.
@@ -1023,7 +1024,7 @@ df_wbody_hist <- df_wbody %>%
 This figure shows the compliance rates and grades for each freshwater waterbody since 2006 using a `r n_year`-year rolling window.
 
 ```{r plot-grade-hist-fresh, fig.width=10, fig.height=8}
-filter(df_wbody_hist, WaterType=="Fresh") %>%
+p.hist.fresh <- filter(df_wbody_hist, WaterType=="Fresh") %>%
   mutate(Meets=ordered(as.character(Meets), levels=c('Boat', 'Swim'))) %>%
   arrange(WaterBodyID, rev(Meets)) %>%
   ggplot(aes(factor(GradeYear), ComplianceMeet)) +
@@ -1043,13 +1044,13 @@ filter(df_wbody_hist, WaterType=="Fresh") %>%
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
   labs(x="", y="% Compliance", 
        title=paste0("Historical Compliance Rates and Grades by Waterbody from 2006-2014 (", n_year," Year Rolling Window)\nFreshwater Waterbodies"))
-
+p.hist.fresh
 ```
 
 This figure shows the historical compliance rates and grades for saltwater waterbodies. Note that some waterbodies show fewer years since sampling did not begin after 2006.
 
 ```{r plot-grade-hist-salt, fig.width=10, fig.height=6}
-filter(df_wbody_hist, WaterType=="Saline") %>%
+p.hist.saline <- filter(df_wbody_hist, WaterType=="Saline") %>%
   mutate(Meets=ordered(as.character(Meets), levels=c('Boat', 'Swim'))) %>%
   arrange(WaterBodyID, rev(Meets)) %>%
   ggplot(aes(factor(GradeYear), ComplianceMeet)) +
@@ -1069,6 +1070,7 @@ filter(df_wbody_hist, WaterType=="Saline") %>%
   theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5)) +
   labs(x="", y="% Compliance", 
        title=paste0("Historical Compliance Rates and Grades by Waterbody from 2006-2014 (", n_year," Year Rolling Window)\nSaltwater Waterbodies"))
+p.hist.saline
 ```
 
 ## Comparison to Historical Charles River Grades
@@ -1159,7 +1161,17 @@ filter(loc, LocationID %in% unique(df$LocationID)) %>%
   write.csv(file="locations.csv", row.names=FALSE)
 ```
 
-
+```{r pdf}
+pdf('pdf/figure-2014-grades.pdf', width=11, height=6)
+print(p.2014)
+dev.off()
+pdf('pdf/figure-historical-grades-freshwater.pdf', width=11, height=8.5)
+print(p.hist.fresh)
+dev.off()
+pdf('pdf/figure-historical-grades-saline.pdf', width=11, height=6)
+print(p.hist.saline)
+dev.off()
+```
 
 
 
